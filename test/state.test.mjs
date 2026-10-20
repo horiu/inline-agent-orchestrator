@@ -1,0 +1,50 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtempSync, writeFileSync, appendFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { Store, stateDir, DEFAULT_CONFIG } from '../src/state.mjs';
+
+const fresh = () => new Store(mkdtempSync(join(tmpdir(), 'csm-state-')));
+
+test('config merges user values over defaults, including a BOM-prefixed file', () => {
+  const s = fresh();
+  writeFileSync(s.configPath, '﻿' + JSON.stringify({ maxRunning: 5, defaults: { model: 'm' } }));
+  const c = s.config();
+  assert.equal(c.maxRunning, 5);
+  assert.equal(c.defaults.model, 'm');
+  assert.equal(c.defaults.sandbox, DEFAULT_CONFIG.defaults.sandbox);
+});
+
+test('broken config names the file', () => {
+  const s = fresh();
+  writeFileSync(s.configPath, '{');
+  assert.throws(() => s.config(), /config\.json is not valid JSON/);
+});
+
+test('stateDir follows CODEX_HOME and the override variable', () => {
+  const home = mkdtempSync(join(tmpdir(), 'csm-home-'));
+  assert.equal(stateDir({ CODEX_HOME: home }), join(home, 'session-manager'));
+  const other = mkdtempSync(join(tmpdir(), 'csm-o-'));
+  assert.equal(stateDir({ CODEX_HOME: home, CSM_HOME: other }), other);
+});
+
+test('readReports keeps a half-written last line for later', () => {
+  const s = fresh();
+  s.appendReport({ kind: 'progress', text: '一' });
+  appendFileSync(s.reportsPath, '{"kind":"done","te');
+  assert.deepEqual(s.readReports().map((r) => r.text), ['一']);
+  assert.equal(s.hasUnreadReports(), true);
+  appendFileSync(s.reportsPath, 'xt":"二"}\n');
+  assert.deepEqual(s.readReports().map((r) => r.text), ['二']);
+  assert.equal(s.hasUnreadReports(), false);
+});
+
+test('readReports starts over when the file was truncated', () => {
+  const s = fresh();
+  s.appendReport({ kind: 'progress', text: 'long long long' });
+  s.readReports();
+  writeFileSync(s.reportsPath, JSON.stringify({ text: 'new' }) + '\n');
+  assert.equal(s.hasUnreadReports(), true);
+  assert.deepEqual(s.readReports().map((r) => r.text), ['new']);
+});

@@ -1,0 +1,19 @@
+{
+  "codexPath": "codex",
+  "transport": "daemon",
+  "claude": {
+    "path": "claude",
+    "permissionMode": "acceptEdits"
+  },
+  "maxRunning": 3,
+  "minFreeMemGb": 2,
+  "pauseAtPct": 95,
+  "defaults": {
+    "sandbox": "workspace-write",
+    "approvalPolicy": "never",
+    "model": null,
+    "effort": null
+  },
+  "watchIntervalMin": 30,
+  "pollSec": 5
+}
