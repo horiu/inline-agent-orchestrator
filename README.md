@@ -73,10 +73,13 @@ VS Code では、チャット欄に `/plugins` と入力して開く画面から
 <details>
 <summary>Claude Code 2.1.257〜2.1.274 をお使いの場合</summary>
 
-チャット欄に次のコマンドを1行ずつ入力します。
+チャット欄に次のコマンドを順に入力します。
 
 ```text
 /plugin marketplace add horiu/inline-agent-orchestrator
+```
+
+```text
 /plugin install inline-agent-orchestrator@inline-agent-orchestrator
 ```
 
@@ -86,10 +89,13 @@ VS Code では、チャット欄に `/plugins` と入力して開く画面から
 
 動作環境: Codex CLI 0.162 以降（デスクトップアプリのみを使う場合も必要です）、Node.js 20 以降、git
 
-ターミナルで次のコマンドを実行します。
+ターミナルで次のコマンドを順に実行します。
 
 ```bash
 git clone https://github.com/horiu/inline-agent-orchestrator.git $HOME/.codex/inline-agent-orchestrator
+```
+
+```bash
 node $HOME/.codex/inline-agent-orchestrator/src/setup.mjs codex
 ```
 
@@ -219,10 +225,13 @@ Codex を再起動すれば準備完了です。セットアップスクリプ�
 
 ### Codex
 
-**更新**: ターミナルで次のコマンドを実行し、Codex を再起動します。
+**更新**: ターミナルで次のコマンドを順に実行し、Codex を再起動します。
 
 ```bash
 git -C $HOME/.codex/inline-agent-orchestrator pull
+```
+
+```bash
 node $HOME/.codex/inline-agent-orchestrator/src/setup.mjs codex
 ```
 
@@ -354,6 +363,8 @@ Claude Code にも Codex にも、AI が別のセッションを操作するた�
 npm test
 ```
 
+版を上げるときは、`.claude-plugin/plugin.json` と `package.json` の `version` を同じ値にして main に入れます。タグ（`v<版>`）と GitHub のリリースは自動で作られます。
+
 | パス | 説明 |
 | --- | --- |
 | `src/server.mjs` | MCP サーバー（標準入出力、JSON-RPC 2.0） |
@@ -373,7 +384,13 @@ npm test
 
 ```bash
 git clone https://github.com/horiu/inline-agent-orchestrator.git $HOME/.claude/inline-agent-orchestrator
+```
+
+```bash
 claude mcp add session-manager --scope user -e CSM_AGENT=claude -- node $HOME/.claude/inline-agent-orchestrator/src/server.mjs
+```
+
+```bash
 node $HOME/.claude/inline-agent-orchestrator/src/setup.mjs statusline
 ```
 

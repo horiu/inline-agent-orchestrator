@@ -79,6 +79,9 @@ Type these commands into the chat box, one at a time:
 
 ```text
 /plugin marketplace add horiu/inline-agent-orchestrator
+```
+
+```text
 /plugin install inline-agent-orchestrator@inline-agent-orchestrator
 ```
 
@@ -88,10 +91,13 @@ Type these commands into the chat box, one at a time:
 
 Requirements: Codex CLI 0.162 or later (required even if you only use the desktop app), Node.js 20 or later, git
 
-Run these commands in a terminal:
+Run these commands in a terminal, in order:
 
 ```bash
 git clone https://github.com/horiu/inline-agent-orchestrator.git $HOME/.codex/inline-agent-orchestrator
+```
+
+```bash
 node $HOME/.codex/inline-agent-orchestrator/src/setup.mjs codex
 ```
 
@@ -221,10 +227,13 @@ From a terminal, use `claude plugin update inline-agent-orchestrator@inline-agen
 
 ### Codex
 
-**Update**: run these commands in a terminal, then restart Codex:
+**Update**: run these commands in a terminal, in order, then restart Codex:
 
 ```bash
 git -C $HOME/.codex/inline-agent-orchestrator pull
+```
+
+```bash
 node $HOME/.codex/inline-agent-orchestrator/src/setup.mjs codex
 ```
 
@@ -356,6 +365,8 @@ The following information helps track down the cause.
 npm test
 ```
 
+To release a new version, set the same `version` in `.claude-plugin/plugin.json` and `package.json` and push it to main. The tag (`v<version>`) and the GitHub release are created automatically.
+
 | Path | Description |
 | --- | --- |
 | `src/server.mjs` | MCP server (stdio, JSON-RPC 2.0) |
@@ -375,7 +386,13 @@ Run these commands in a terminal, in order:
 
 ```bash
 git clone https://github.com/horiu/inline-agent-orchestrator.git $HOME/.claude/inline-agent-orchestrator
+```
+
+```bash
 claude mcp add session-manager --scope user -e CSM_AGENT=claude -- node $HOME/.claude/inline-agent-orchestrator/src/server.mjs
+```
+
+```bash
 node $HOME/.claude/inline-agent-orchestrator/src/setup.mjs statusline
 ```
 
