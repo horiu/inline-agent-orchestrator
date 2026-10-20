@@ -1,6 +1,6 @@
 ---
 name: manage-sessions
-description: このセッションをオーケストレーターにして、作業ごとに別のセッションを起動・監視・停止・再開し、確認が必要な点をまとめて利用者に聞き、すべての作業が終わるまで見届ける。Claude Code・Codex のどちらでも使える。「監視して」「並行して進めて」「manage-sessions」「orchestrate」などの依頼で使う。MCP サーバー session-manager のツールを使う。
+description: Make this session an orchestrator that starts, monitors and steers other Claude Code or Codex sessions.
 ---
 
 # manage-sessions — 監視役の会話
@@ -19,16 +19,19 @@ description: このセッションをオーケストレーターにして、作�
 | 利用者が開く | `codex resume <ID>`・`codex agents` | `claude attach <短いID>`・`claude agents` |
 | 作業フォルダ | 監視役が worktree を作って `cwd` に渡す | `cwd` はリポジトリでよい（Claude Code が編集の前に `.claude/worktrees/` に worktree を作る） |
 | 動いている会話へ送る | 今のターンの後に回る（queue）。割り込み（steer）もできる | 監視役が預かり、終わったら届ける（割り込みはできない） |
-| 名前を変える | できる | 記録だけ（CLI からは変えられない。人は agent view の `/rename` で変えられる） |
+| 名前を変える | できる | 記録だけ（CLI からは変えられない。人は `/rename` で変えられる） |
 | 止めたとき預かった連絡 | Codex の queue に残り、再開の後に読まれる | 捨てる（止めた会話を動かさないため） |
 | 利用枠 | app-server から読む | status line が書いた `usage.json` から読む（設定が無いと読めない） |
 
 ## 1. 始める
 
 1. `local-rules.md` があれば読む
-2. `get_usage` で利用枠・空きメモリ・動いている数を見る。`list_sessions`（scope=managed）で前回から続く会話を見る
+2. この会話の名前を `Manager` にする（前の会話から続けていて、もう付けてあれば飛ばす）
+   - Codex: シェルで自分の会話の ID を読み（PowerShell は `$env:CODEX_THREAD_ID`、ほかは `echo $CODEX_THREAD_ID`）、`set_session_name`（threadId にその ID、name `Manager`）。ID が空、または失敗したら飛ばす（利用者には言わない）
+   - Claude Code: 外から名前を変えられないので、最初の返事に一行だけ「このセッションの名前を変えるには `/rename Manager` と入力してください」と添える
+3. `get_usage` で利用枠・空きメモリ・動いている数を見る。`list_sessions`（scope=managed）で前回から続く会話を見る
    - Claude Code で `usage.error` に status line を設定するコマンドが出ていたら（初めて使うとき）、利用者に「利用枠を読めるように status line を設定してよいか（`~/.claude/settings.json` の statusLine を変える。今の表示はそのまま出る。元に戻すときは同じコマンドに `--remove`）」を聞く。了承されたらそのコマンドを実行する。断られたら、枠の上限は効かないことを伝えて進める
-3. 利用者の依頼を、会話1本ごとの仕事に分ける（同じファイル・同じ画面を触るものは1本にまとめる）。分け方を一言伝えてから起こす
+4. 利用者の依頼を、会話1本ごとの仕事に分ける（同じファイル・同じ画面を触るものは1本にまとめる）。分け方を一言伝えてから起こす
 
 ## 2. 仕事を渡す（start_session）
 
@@ -81,8 +84,14 @@ description: このセッションをオーケストレーターにして、作�
 - **`idle: true` が返ったら見回りをやめる**（動いている会話・枠で止めた会話・預かった連絡・未読の報告がどれも無い）。利用者へ「動いている会話が無いので見回りを止めました」と伝えてターンを終える。次の依頼や「見回って」で再開する
 - 変化の無いタイムアウト（`timedOut: true`）には何も書かずにもう一度呼ぶ（利用者への文も出さない。戻るたびに会話の全部を読み直すので、ここで書くほど会話が膨らむ）
 - 見回りの間隔は設定の `watchIntervalMin`（既定30分）。`intervalMin` は付けずに呼ぶ。利用者が「見回りは10分ごとに」のように頼んだときだけ、以後 `intervalMin` を付ける（設定より長くはできない。ずっと長くしたいと言われたら、README の「見回りの間隔と利用枠」を案内する）
-- 見回りが利用者に止められた（打ち切られた）ら、利用者の文に答えてから見回りに戻る
+- 見回りが利用者に止められた（打ち切られた）ら、利用者の文に答えてから見回りに戻る。ただし、やめる指示なら戻らない（次の「やめるとき」）
 - `wait_events` は1つずつ呼ぶ（並べて呼ぶと前の呼び出しは `cancelled` で打ち切られる。打ち切られた分の出来事は次の呼び出しで返る。ただし Claude Code の `queuedDelivered` は返らないことがあるので、届いたかは `list_sessions` で見る: `managed.queued` が 0 で、会話が active になっていれば届いている）
+
+### やめるとき
+
+- 「監視をやめて」「いったん終わり」: `wait_events` を呼ばずにターンを終える。作業の会話は止めずに動かしたままにする。利用者へ、動いている会話の名前と開き方、「見回って」で再開できることを伝える
+- 「全部止めて」: 動いている会話をすべて `stop_session`（markAs `paused`）で止めてから、上と同じように終える。止めた会話は「これを進めて」で再開できる
+- どちらか分からなければ、作業の会話も止めるかを一言聞く
 
 ## 5. 判断待ちをまとめて聞く
 
@@ -103,7 +112,7 @@ description: このセッションをオーケストレーターにして、作�
 - 枠で止めた会話（`paused_usage`）があるあいだ、`wait_events` は idle を返さずに待ち続け、枠が戻ると `usageRecovered` を1回返す。来たら `paused_usage` の会話へ「利用枠が戻りました。止まった所から続きをお願いします」と `send_message`（状態は running に戻る）
 - 止める前に送ってあった連絡は、Codex では止めても消えず、再開の後に読まれる（古くなった連絡があれば、再開の依頼に「前に送った◯◯は取り消し」と書く）。Claude Code では止めたときに捨てられるので、要るものは再開の依頼に書き直す
 - リセットまで長いとき（週の枠など）は、利用者に伝えて見回りをやめてよい。戻ったら利用者が「見回って」と打つ
-- Claude Code で status line を設定していないあいだは、利用枠が読めないので枠の上限は効かない（設定は 1. の 2）
+- Claude Code で status line を設定していないあいだは、利用枠が読めないので枠の上限は効かない（設定は 1. の 3）
 
 ## 8. 保留
 

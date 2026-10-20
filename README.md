@@ -7,7 +7,7 @@
 複数の作業をまとめて1つのセッションに依頼すると、そのセッションがオーケストレーターとして動きます。作業ごとに別のセッションを起動して進捗を監視し、判断が必要な点だけをまとめて確認します。新しいアプリや画面を覚える必要はありません。
 
 > [!NOTE]
-> 試作版（v0.4.1）です。単体テストは通過していますが、実際の Claude Code・Codex での動作検証はまだ行っていません。ご利用の前に「[動作確認](#動作確認)」の手順をお試しください。
+> 試作版（v0.5.0）です。単体テストは通過していますが、実際の Claude Code・Codex での動作検証はまだ行っていません。ご利用の前に「[動作確認](#動作確認)」の手順をお試しください。
 
 ## 特長
 
@@ -89,8 +89,8 @@ VS Code では、チャット欄に `/plugins` と入力して開く画面から
 ターミナルで次のコマンドを実行します。
 
 ```bash
-git clone https://github.com/horiu/inline-agent-orchestrator.git $HOME/tools/inline-agent-orchestrator
-node $HOME/tools/inline-agent-orchestrator/src/setup.mjs codex
+git clone https://github.com/horiu/inline-agent-orchestrator.git $HOME/.codex/inline-agent-orchestrator
+node $HOME/.codex/inline-agent-orchestrator/src/setup.mjs codex
 ```
 
 Codex を再起動すれば準備完了です。セットアップスクリプトは MCP サーバーを `~/.codex/config.toml` に登録し（変更前のファイルは `config.toml.bak-<日時>` として保存します）、スキルを `~/.agents/skills/manage-sessions/` にインストールします。
@@ -108,12 +108,15 @@ Codex を再起動すれば準備完了です。セットアップスクリプ�
 
 オーケストレーターが作業を分割し、作業用のセッションを起動して監視を始めます。「PR を作成するまで」「調査して報告するまで」のように、どこまで進めるかを添えると、途中で止まらずに進みます。
 
+オーケストレーターのセッションには `Manager` という名前が付きます。Claude Code では外から名前を変えられないため、案内に従ってチャット欄に `/rename Manager` と入力してください。
+
 ### 実行中
 
 - **追加の作業もオーケストレーターへ** — 同じ箇所を扱っているセッションがあればそこへ追加し、関係がなければ新しいセッションを起動します
 - **作業中のセッションを確認する** — Claude Code では `claude agents` で一覧を表示し、`claude attach <ID>` で開きます。Codex では `codex agents` と `codex resume <ID>` を使います。開いたセッションに直接指示することもできます
 - **モデルやエフォートを変える** — 「fix-login はもっと深く考えさせて」「設計が終わったら実装用の設定に切り替えて」のように依頼すると、次の指示から切り替わります
 - **オーケストレーターに話しかける** — 監視中は応答が遅れることがあります。急ぐ場合は停止ボタン（Claude Code では Esc）で監視を止めてから入力してください。止めている間の出来事も失われず、次の監視で受け取ります
+- **監視をやめる** — 停止ボタン（Claude Code では Esc）で監視を止めてから、「監視をやめて」と伝えます。作業用のセッションはそのまま動き続け、「見回って」と伝えると監視を再開します。作業用のセッションも止める場合は「全部止めて」と伝えます
 
 ### 完了後
 
@@ -219,11 +222,17 @@ Codex を再起動すれば準備完了です。セットアップスクリプ�
 **更新**: ターミナルで次のコマンドを実行し、Codex を再起動します。
 
 ```bash
-git -C $HOME/tools/inline-agent-orchestrator pull
-node $HOME/tools/inline-agent-orchestrator/src/setup.mjs codex
+git -C $HOME/.codex/inline-agent-orchestrator pull
+node $HOME/.codex/inline-agent-orchestrator/src/setup.mjs codex
 ```
 
-**アンインストール**: `~/.codex/config.toml` から `[mcp_servers.session-manager]` の項目を削除し、`~/.agents/skills/manage-sessions/` フォルダを削除します。
+**アンインストール**: ターミナルで次のコマンドを実行し、Codex を再起動します。MCP サーバーの登録とスキルが外れます（変更前の `config.toml` は `config.toml.bak-<日時>` として保存します）。
+
+```bash
+node $HOME/.codex/inline-agent-orchestrator/src/setup.mjs codex --remove
+```
+
+このツールのフォルダ（`~/.codex/inline-agent-orchestrator`）と監視の記録（`~/.codex/session-manager`）は残ります。不要であれば削除してください。
 
 ## 仕組み
 
@@ -328,7 +337,7 @@ Claude Code にも Codex にも、AI が別のセッションを操作するた�
 | `claude agents --json returned something that is not JSON`（Claude Code） | CLI を更新する。agent view の状態は `claude daemon status` で確認できる |
 | `daemon start failed`（Codex） | Windows では、管理者権限の PowerShell からは起動できません。`CODEX_HOME` のパスが長すぎる場合も起動できません |
 | `thread/queue/add を使えません`（Codex） | Codex を更新する |
-| 監視がタイムアウトする（Codex） | ターミナルで `node $HOME/tools/inline-agent-orchestrator/src/setup.mjs codex` を再実行する（`tool_timeout_sec` が修正されます） |
+| 監視がタイムアウトする（Codex） | ターミナルで `node $HOME/.codex/inline-agent-orchestrator/src/setup.mjs codex` を再実行する（`tool_timeout_sec` が修正されます） |
 
 ### 不具合の報告
 
@@ -363,9 +372,9 @@ npm test
 ターミナルで次のコマンドを順に実行します。
 
 ```bash
-git clone https://github.com/horiu/inline-agent-orchestrator.git $HOME/tools/inline-agent-orchestrator
-claude mcp add session-manager --scope user -e CSM_AGENT=claude -- node $HOME/tools/inline-agent-orchestrator/src/server.mjs
-node $HOME/tools/inline-agent-orchestrator/src/setup.mjs statusline
+git clone https://github.com/horiu/inline-agent-orchestrator.git $HOME/.claude/inline-agent-orchestrator
+claude mcp add session-manager --scope user -e CSM_AGENT=claude -- node $HOME/.claude/inline-agent-orchestrator/src/server.mjs
+node $HOME/.claude/inline-agent-orchestrator/src/setup.mjs statusline
 ```
 
 スキルは `skills/manage-sessions/` を `~/.claude/skills/` にコピーし、`/manage-sessions` で呼び出します。

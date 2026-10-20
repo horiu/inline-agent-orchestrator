@@ -2,6 +2,7 @@
 // One-command setup.
 //
 //   node src/setup.mjs codex                 register the MCP server in Codex and install the skill
+//   node src/setup.mjs codex --remove        undo it (the clone and the records stay)
 //   node src/setup.mjs statusline            let Claude Code record plan usage (status line)
 //   node src/setup.mjs statusline --remove   put the previous status line back
 //
@@ -56,17 +57,22 @@ const ENV_LINE = /^\s*env\s*(=|\.)/;
 // A table header without its trailing comment.
 const headerOf = (l) => l.replace(/#.*$/, '').trim();
 
-// Replaces the [mcp_servers.session-manager] table or appends it. Keeps the
-// server's `env` (line or sub-table) and comments that belong to the next
-// table. Throws when the server is defined in a form it cannot rewrite.
-export function upsertCodexServer(toml, block) {
-  const lines = toml.split(/\r?\n/);
+// Throws when the server is defined in a form this script cannot rewrite.
+function assertRewritable(lines) {
   let table = null; // name of the current table header
   for (const l of lines) {
     if (ANY_TABLE.test(l)) table = headerOf(l);
     else if (DOTTED_DEF.test(l) && table === null) throw new Error(dottedMessage());
     else if (INLINE_DEF.test(l) && /^\[\s*mcp_servers\s*\]$/.test(table ?? '')) throw new Error(dottedMessage());
   }
+}
+
+// Replaces the [mcp_servers.session-manager] table or appends it. Keeps the
+// server's `env` (line or sub-table) and comments that belong to the next
+// table. Throws when the server is defined in a form it cannot rewrite.
+export function upsertCodexServer(toml, block) {
+  const lines = toml.split(/\r?\n/);
+  assertRewritable(lines);
 
   const out = [];
   // env from the old table, re-added after the new block
@@ -126,6 +132,41 @@ export function upsertCodexServer(toml, block) {
   return `${text.trimEnd()}\n`;
 }
 
+// Drops the [mcp_servers.session-manager] table and its sub-tables (env
+// included). Comments that belong to the next table stay.
+export function removeCodexServer(toml) {
+  const lines = toml.split(/\r?\n/);
+  assertRewritable(lines);
+  const out = [];
+  let skipping = false;
+  let skipped = [];
+  const flushNotes = () => {
+    let i = skipped.length;
+    while (i > 0 && isNote(skipped[i - 1])) i--;
+    const notes = skipped.slice(i);
+    // One blank line where the table was, not two.
+    while (notes.length && !notes[0].trim() && (!out.length || !out[out.length - 1].trim())) notes.shift();
+    out.push(...notes);
+    skipped = [];
+  };
+  for (const l of lines) {
+    if (OUR_TABLE.test(l)) {
+      skipping = true;
+      skipped = [];
+      continue;
+    }
+    if (ANY_TABLE.test(l) && skipping) {
+      flushNotes();
+      skipping = false;
+    }
+    if (skipping) skipped.push(l);
+    else out.push(l);
+  }
+  if (skipping) flushNotes();
+  const text = out.join('\n').trimEnd();
+  return text ? `${text}\n` : '';
+}
+
 function dottedMessage() {
   return `config.toml の ${SERVER_KEY} が、この道具では書き換えられない形（インラインの表・点で区切ったキー）で書かれています。その定義を消してから、もう一度実行してください（config.toml は変えていません）`;
 }
@@ -156,6 +197,35 @@ export function setupCodex({ env = process.env, home = homedir(), now = new Date
   mkdirSync(dirname(skillPath), { recursive: true });
   cpSync(SKILL_SOURCE, skillPath, { recursive: true, force: true });
   return { configPath, changed: after !== before, backedUp, skillPath };
+}
+
+// Undoes setupCodex: the server table (with a backup) and the skill, when the
+// skill folder is the one this tool installed. The records in the state
+// folder and this folder itself are left for the person to delete.
+export function removeCodex({ env = process.env, home = homedir(), now = new Date() } = {}) {
+  const codexHome = env.CODEX_HOME || join(home, '.codex');
+  const configPath = join(codexHome, 'config.toml');
+  const before = existsSync(configPath) ? readFileSync(configPath, 'utf8') : '';
+  const after = removeCodexServer(before);
+  let backedUp = null;
+  if (after !== before) {
+    backedUp = backup(configPath, now);
+    writeFileSync(configPath, after, 'utf8');
+  }
+  const skillPath = join(home, '.agents', 'skills', 'manage-sessions');
+  const skillFile = join(skillPath, 'SKILL.md');
+  const ours = existsSync(skillFile) && /^name:\s*manage-sessions\s*$/m.test(readFileSync(skillFile, 'utf8')) && /session-manager/.test(readFileSync(skillFile, 'utf8'));
+  if (ours) rmSync(skillPath, { recursive: true, force: true });
+  return {
+    configPath,
+    changed: after !== before,
+    backedUp,
+    skillPath,
+    skillRemoved: ours,
+    skillLeft: !ours && existsSync(skillPath),
+    stateDir: env.CSM_HOME || join(codexHome, 'session-manager'),
+    root: ROOT,
+  };
 }
 
 // ---- Claude Code status line ----
@@ -270,6 +340,18 @@ export function setupStatusline({ env = process.env, home = homedir(), now = new
 
 function main(argv) {
   const [what, ...flags] = argv;
+  if (what === 'codex' && flags.includes('--remove')) {
+    const r = removeCodex();
+    console.log(r.changed ? `MCP サーバーの登録を外しました: ${r.configPath}` : `MCP サーバーは登録されていませんでした: ${r.configPath}`);
+    if (r.backedUp) console.log(`  元のファイル: ${r.backedUp}`);
+    if (r.skillRemoved) console.log(`スキルを削除しました: ${r.skillPath}`);
+    else if (r.skillLeft) console.log(`${r.skillPath} はこの道具のスキルではないため、残しました。`);
+    console.log('Codex を起動し直すと、反映されます。');
+    console.log('次のフォルダは残しています。不要なら削除してください。');
+    console.log(`  監視の記録: ${r.stateDir}`);
+    console.log(`  この道具: ${r.root}`);
+    return;
+  }
   if (what === 'codex') {
     const r = setupCodex();
     console.log(`MCP サーバーを登録しました: ${r.configPath}${r.changed ? '' : '（もう登録済みでした）'}`);
@@ -290,7 +372,7 @@ function main(argv) {
     if (r.backedUp) console.log(`  元のファイル: ${r.backedUp}`);
     return;
   }
-  console.log('使い方: node src/setup.mjs codex | statusline [--remove]');
+  console.log('使い方: node src/setup.mjs codex [--remove] | statusline [--remove]');
   process.exitCode = what ? 1 : 0;
 }
 

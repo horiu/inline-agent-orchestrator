@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFil
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { CHAINED_ENV, chainedCommand, gitBashPath, runChained } from '../src/claude-statusline.mjs';
-import { codexBlock, refreshStatuslineCopy, setupCodex, setupStatusline, upsertCodexServer } from '../src/setup.mjs';
+import { codexBlock, refreshStatuslineCopy, removeCodex, removeCodexServer, setupCodex, setupStatusline, upsertCodexServer } from '../src/setup.mjs';
 
 const now = new Date('2026-10-21T01:02:03Z');
 const home = () => mkdtempSync(join(tmpdir(), 'csm-setup-'));
@@ -65,6 +65,37 @@ test('codex: setup writes config.toml with a backup and copies the skill', () =>
   const again = setupCodex({ env: {}, home: h, now, node: 'node' });
   assert.equal(again.changed, false);
   assert.equal(again.backedUp, null);
+});
+
+test('codex: removing drops the table and its env, keeps the rest and comments for the next table', () => {
+  const toml = 'model = "x"\n\n[mcp_servers.session-manager]\ncommand = "node"\nargs = ["s"]\n\n[mcp_servers.session-manager.env]\nA = "1"\n\n# tools of mine\n[tools]\ny = 1\n';
+  assert.equal(removeCodexServer(toml), 'model = "x"\n\n# tools of mine\n[tools]\ny = 1\n');
+  assert.equal(removeCodexServer('[mcp_servers.session-manager]\ncommand = "node"\n'), '');
+  assert.equal(removeCodexServer('model = "x"\n'), 'model = "x"\n', 'nothing to remove');
+  assert.throws(() => removeCodexServer('[mcp_servers]\nsession-manager = { command = "x" }\n'), /書き換えられない形/);
+});
+
+test('codex: --remove undoes setup, and leaves a skill that is not ours', () => {
+  const h = home();
+  mkdirSync(join(h, '.codex'));
+  writeFileSync(join(h, '.codex', 'config.toml'), 'model = "x"\n');
+  setupCodex({ env: {}, home: h, now, node: 'node' });
+  const r = removeCodex({ env: {}, home: h, now });
+  assert.equal(r.changed, true);
+  assert.ok(existsSync(r.backedUp));
+  assert.equal(readFileSync(r.configPath, 'utf8'), 'model = "x"\n');
+  assert.equal(r.skillRemoved, true);
+  assert.ok(!existsSync(join(h, '.agents', 'skills', 'manage-sessions')));
+  assert.equal(r.stateDir, join(h, '.codex', 'session-manager'));
+  assert.equal(removeCodex({ env: {}, home: h, now }).changed, false, 'running again changes nothing');
+
+  const other = join(h, '.agents', 'skills', 'manage-sessions');
+  mkdirSync(other, { recursive: true });
+  writeFileSync(join(other, 'SKILL.md'), '---\nname: manage-sessions\ndescription: someone else\n---\n');
+  const left = removeCodex({ env: {}, home: h, now });
+  assert.equal(left.skillRemoved, false);
+  assert.equal(left.skillLeft, true);
+  assert.ok(existsSync(join(other, 'SKILL.md')));
 });
 
 test('codex: CODEX_HOME is honoured', () => {

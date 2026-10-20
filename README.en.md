@@ -7,7 +7,7 @@ English | [日本語](README.md)
 Hand a batch of tasks to a single session, and it becomes the orchestrator: it starts a separate session for each task, monitors their progress, and brings back only the decisions that need you, all at once. There is no new app or UI to learn.
 
 > [!NOTE]
-> This is a prototype (v0.4.1). The unit tests pass, but it has not yet been verified against real Claude Code or Codex sessions. Please run through [Verification](#verification) before relying on it.
+> This is a prototype (v0.5.0). The unit tests pass, but it has not yet been verified against real Claude Code or Codex sessions. Please run through [Verification](#verification) before relying on it.
 >
 > Messages from the tools and the skill's instructions are currently written in Japanese. The model still understands and answers in your language.
 
@@ -91,8 +91,8 @@ Requirements: Codex CLI 0.162 or later (required even if you only use the deskto
 Run these commands in a terminal:
 
 ```bash
-git clone https://github.com/horiu/inline-agent-orchestrator.git $HOME/tools/inline-agent-orchestrator
-node $HOME/tools/inline-agent-orchestrator/src/setup.mjs codex
+git clone https://github.com/horiu/inline-agent-orchestrator.git $HOME/.codex/inline-agent-orchestrator
+node $HOME/.codex/inline-agent-orchestrator/src/setup.mjs codex
 ```
 
 Restart Codex and you're ready. The setup script registers the MCP server in `~/.codex/config.toml` (saving the previous file as `config.toml.bak-<timestamp>`) and installs the skill into `~/.agents/skills/manage-sessions/`.
@@ -110,12 +110,15 @@ In a new session, type the command below into the chat box, then describe the ta
 
 The orchestrator splits the work, starts worker sessions, and begins monitoring. Saying how far each task should go — "up to opening a PR", "investigate and report" — keeps the work moving without stopping midway.
 
+The orchestrator session is named `Manager`. Claude Code does not let a tool rename a session, so when prompted, type `/rename Manager` into the chat box.
+
 ### While it runs
 
 - **Send new requests to the orchestrator** — If a session is already working on the same area, the request goes there; otherwise a new session is started
 - **Check on worker sessions** — In Claude Code, list them with `claude agents` and open one with `claude attach <ID>`. In Codex, use `codex agents` and `codex resume <ID>`. You can also talk to an opened session directly
 - **Change the model or effort** — Ask something like "have fix-login think harder" or "switch to the implementation settings once the design is done"; the change takes effect from the next instruction
 - **Talk to the orchestrator** — Replies may be delayed while it is monitoring. If it's urgent, stop the monitoring first with the stop button (Esc in Claude Code), then type. Nothing that happens in the meantime is lost; it is picked up on the next round of monitoring
+- **Stop monitoring** — Stop the monitoring with the stop button (Esc in Claude Code), then say "stop monitoring". The worker sessions keep running, and saying "check on them" resumes monitoring. To stop the worker sessions too, say "stop everything"
 
 ### When it's done
 
@@ -221,11 +224,17 @@ From a terminal, use `claude plugin update inline-agent-orchestrator@inline-agen
 **Update**: run these commands in a terminal, then restart Codex:
 
 ```bash
-git -C $HOME/tools/inline-agent-orchestrator pull
-node $HOME/tools/inline-agent-orchestrator/src/setup.mjs codex
+git -C $HOME/.codex/inline-agent-orchestrator pull
+node $HOME/.codex/inline-agent-orchestrator/src/setup.mjs codex
 ```
 
-**Uninstall**: remove the `[mcp_servers.session-manager]` entry from `~/.codex/config.toml`, and delete the `~/.agents/skills/manage-sessions/` folder.
+**Uninstall**: run this command in a terminal, then restart Codex. It removes the MCP server registration and the skill (saving the previous `config.toml` as `config.toml.bak-<timestamp>`).
+
+```bash
+node $HOME/.codex/inline-agent-orchestrator/src/setup.mjs codex --remove
+```
+
+The tool's folder (`~/.codex/inline-agent-orchestrator`) and the monitoring records (`~/.codex/session-manager`) are left in place. Delete them if you no longer need them.
 
 ## How it works
 
@@ -330,7 +339,7 @@ Cleanup: `codex archive <ID>`, `update_session` (remove), and `codex app-server 
 | `claude agents --json returned something that is not JSON` (Claude Code) | Update the CLI. Check agent view's status with `claude daemon status` |
 | `daemon start failed` (Codex) | On Windows, it cannot be started from an administrator PowerShell. It also fails if the `CODEX_HOME` path is too long |
 | `thread/queue/add を使えません` (Codex) | Update Codex |
-| Monitoring times out (Codex) | In a terminal, run `node $HOME/tools/inline-agent-orchestrator/src/setup.mjs codex` again (it fixes `tool_timeout_sec`) |
+| Monitoring times out (Codex) | In a terminal, run `node $HOME/.codex/inline-agent-orchestrator/src/setup.mjs codex` again (it fixes `tool_timeout_sec`) |
 
 ### Reporting issues
 
@@ -365,9 +374,9 @@ npm test
 Run these commands in a terminal, in order:
 
 ```bash
-git clone https://github.com/horiu/inline-agent-orchestrator.git $HOME/tools/inline-agent-orchestrator
-claude mcp add session-manager --scope user -e CSM_AGENT=claude -- node $HOME/tools/inline-agent-orchestrator/src/server.mjs
-node $HOME/tools/inline-agent-orchestrator/src/setup.mjs statusline
+git clone https://github.com/horiu/inline-agent-orchestrator.git $HOME/.claude/inline-agent-orchestrator
+claude mcp add session-manager --scope user -e CSM_AGENT=claude -- node $HOME/.claude/inline-agent-orchestrator/src/server.mjs
+node $HOME/.claude/inline-agent-orchestrator/src/setup.mjs statusline
 ```
 
 Copy `skills/manage-sessions/` into `~/.claude/skills/` and invoke it with `/manage-sessions`.
