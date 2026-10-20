@@ -7,7 +7,7 @@ English | [日本語](README.md)
 Hand a batch of tasks to a single session, and it becomes the orchestrator: it starts a separate session for each task, monitors their progress, and brings back only the decisions that need you, all at once. There is no new app or UI to learn.
 
 > [!NOTE]
-> This is a prototype (v0.3.0). The unit tests pass, but it has not yet been verified against real Claude Code or Codex sessions. Please run through [Verification](#verification) before relying on it.
+> This is a prototype (v0.4.0). The unit tests pass, but it has not yet been verified against real Claude Code or Codex sessions. Please run through [Verification](#verification) before relying on it.
 >
 > Messages from the tools and the skill's instructions are currently written in Japanese. The model still understands and answers in your language.
 
@@ -95,6 +95,7 @@ The orchestrator splits the work, starts worker sessions, and begins monitoring.
 
 - **Send new requests to the orchestrator** — If a session is already working on the same area, the request goes there; otherwise a new session is started
 - **Check on worker sessions** — In Claude Code, list them with `claude agents` and open one with `claude attach <ID>`. In Codex, use `codex agents` and `codex resume <ID>`. You can also talk to an opened session directly
+- **Change the model or effort** — Ask something like "have fix-login think harder" or "switch to the implementation settings once the design is done"; the change takes effect from the next instruction
 - **Talk to the orchestrator** — Replies may be delayed while it is monitoring. If it's urgent, stop the monitoring first with the stop button (Esc in Claude Code), then type. Nothing that happens in the meantime is lost; it is picked up on the next round of monitoring
 
 ### When it's done
@@ -119,7 +120,8 @@ You can also point to another location with the `CSM_HOME` environment variable.
 | `pauseAtPct` | `95` | When usage reaches this percentage, no new sessions are started and running sessions are paused |
 | `watchIntervalMin` | `30` | How often the orchestrator checks in when nothing happens (minutes, max 60) |
 | `pollSec` | `5` | How often session status is checked (seconds) |
-| `defaults.model` / `defaults.effort` | — | Model and effort for worker sessions (each tool's default when omitted) |
+| `profiles` | See below | Model and effort for each kind of task |
+| `defaults.model` / `defaults.effort` | — | Model and effort when no profile is used (each tool's default when omitted) |
 
 <details>
 <summary>Claude Code and Codex specific settings</summary>
@@ -135,9 +137,41 @@ You can also point to another location with the `CSM_HOME` environment variable.
 
 </details>
 
+### Choosing models and effort
+
+The orchestrator starts each session with a profile that matches the kind of task. These recommended profiles are built in:
+
+| Profile | Use for | Claude Code | Codex |
+| --- | --- | --- | --- |
+| `design` | Design and architecture decisions | Opus, xhigh | xhigh |
+| `debug` | Investigating bugs with an unknown cause | Opus, high | high |
+| `implement` | Everyday implementation and fixes | Opus, medium | medium |
+| `review` | Code review | Opus, high | high |
+| `writing` | Writing and editing documentation or UI text | Sonnet, high | high |
+| `routine` | Well-defined tasks and checks | Sonnet, medium | medium |
+
+- When in doubt, the orchestrator picks the stronger profile — redoing work that was underpowered ends up costing more
+- If an investigation doesn't narrow down the cause on the first pass, it raises the effort to xhigh
+- Codex model names change between releases, so the Codex profiles set only the effort and use Codex's default model
+
+To customize, add a profile with the same name under `profiles` in `config.json` to replace it, or set it to `null` to remove it. You can also add profiles with new names.
+
+```json
+{
+  "profiles": {
+    "design": {
+      "description": "Design and architecture decisions",
+      "claude": { "model": "opus", "effort": "max" },
+      "codex": { "model": "<model name>", "effort": "xhigh" }
+    },
+    "routine": null
+  }
+}
+```
+
 ### Adding your own rules
 
-Write rules such as which model to use for what, or how many heavy jobs may run at once, in `local-rules.md` in the data folder. The orchestrator reads it first. See [`local-rules.example.md`](skills/manage-sessions/local-rules.example.md) for an example.
+Write rules such as exceptions to the profiles, or how many heavy jobs may run at once, in `local-rules.md` in the data folder. The orchestrator reads it first. See [`local-rules.example.md`](skills/manage-sessions/local-rules.example.md) for an example.
 
 To share the reporting rules with sessions you open yourself, append the contents of [`AGENTS.snippet.md`](AGENTS.snippet.md) to `~/.claude/CLAUDE.md` (for Codex, `~/.codex/AGENTS.md`).
 
@@ -189,11 +223,11 @@ Neither Claude Code nor Codex ships a tool that lets the AI operate other sessio
 | --- | --- | --- | --- | --- |
 | `list_sessions` | Orchestrator | List managed sessions, or all sessions, with their status | `thread/read`, `thread/list` | `claude agents --json` |
 | `read_session` | Orchestrator | Recent exchanges | `thread/turns/list` | `claude logs` |
-| `start_session` | Orchestrator | Start a session, name it, and send the first request. If a limit would be exceeded, it does not start and returns the reason | `thread/start`, `turn/start` | `claude --bg` |
-| `send_message` | Orchestrator | Send after the current turn to a running session, or as a continuation to a stopped one | `thread/queue/add`, `turn/start`, `turn/steer` | Held, then `claude --resume --bg` |
+| `start_session` | Orchestrator | Start a session with a profile (or a model and effort), name it, and send the first request. If a limit would be exceeded, it does not start and returns the reason | `thread/start`, `turn/start` | `claude --bg` |
+| `send_message` | Orchestrator | Send after the current turn to a running session, or as a continuation to a stopped one. Can also change the model or effort | `thread/queue/add`, `turn/start`, `turn/steer` | Held, then `claude --resume --bg` |
 | `stop_session` | Orchestrator | Stop the running turn | `turn/interrupt` | `claude stop` |
 | `set_session_name` | Orchestrator | Rename a session | `thread/name/set` | Record only |
-| `get_usage` | Orchestrator | Usage, free memory, number of running sessions, and whether a new one may start | `account/rateLimits/read` | `usage.json` |
+| `get_usage` | Orchestrator | Usage, free memory, number of running sessions, whether a new one may start, and the list of profiles | `account/rateLimits/read` | `usage.json` |
 | `update_session` | Orchestrator | Update the record (status, notes, on hold) | `state.json` | `state.json` |
 | `wait_events` | Orchestrator | Wait for status changes, reports, approval requests, low memory, and usage limits being hit or reset | `thread/read` | `claude agents --json` |
 | `read_reports` | Orchestrator | Read reports | `reports.jsonl` | `reports.jsonl` |

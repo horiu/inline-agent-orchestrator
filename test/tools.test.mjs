@@ -108,6 +108,32 @@ test('send_message auto: queue for an active thread, resume + turn/start for an 
   assert.equal(calls('turn/start')[0].params.input[0].text, '再開して');
 });
 
+test('codex: a profile sets the effort and leaves the model to Codex; explicit values win', async () => {
+  const r = await tools.start_session.handler({ name: 'p', cwd: '/r', prompt: 'x', profile: 'debug' });
+  assert.equal(r.profile, 'debug');
+  assert.equal(r.effort, 'high');
+  assert.equal(calls('thread/start')[0].params.model, undefined);
+  assert.equal(calls('turn/start')[0].params.effort, 'high');
+  await tools.start_session.handler({ name: 'q', cwd: '/r', prompt: 'x', profile: 'debug', effort: 'xhigh', model: 'm-1' });
+  assert.equal(calls('thread/start')[1].params.model, 'm-1');
+  assert.equal(calls('turn/start')[1].params.effort, 'xhigh');
+  await assert.rejects(tools.start_session.handler({ name: 'z', cwd: '/r', prompt: 'x', profile: 'nope' }), /profile「nope」はありません/);
+  const u = await tools.get_usage.handler({});
+  assert.deepEqual(u.profiles.find((p) => p.name === 'design'), { name: 'design', description: u.profiles[0].description, model: null, effort: 'xhigh' });
+});
+
+test('codex: model and effort change with the next turn of a stopped thread, not of a running one', async () => {
+  fake.addThread('i', { status: { type: 'idle' } });
+  store.updateTarget('i', { name: 'I', status: 'running', effort: 'medium' });
+  const r = await tools.send_message.handler({ threadId: 'i', message: '続き', effort: 'xhigh' });
+  assert.deepEqual(r.changed, { effort: 'xhigh' });
+  assert.equal(calls('turn/start')[0].params.effort, 'xhigh');
+  assert.equal(store.state().targets.i.effort, 'xhigh');
+  fake.addThread('a', { status: { type: 'active', activeFlags: [] } });
+  await assert.rejects(tools.send_message.handler({ threadId: 'a', message: 'x', profile: 'design' }), /動いている会話のモデル・エフォートは変えられません/);
+  assert.equal(calls('thread/queue/add').length, 0, 'nothing was queued');
+});
+
 test('send_message explains a missing thread/queue/add', async () => {
   fake.addThread('a', { status: { type: 'active', activeFlags: [] } });
   fake.unsupported.add('thread/queue/add');

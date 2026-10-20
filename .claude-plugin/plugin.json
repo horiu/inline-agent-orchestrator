@@ -1,7 +1,7 @@
 {
   "name": "inline-agent-orchestrator",
   "displayName": "Inline Agent Orchestrator",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "いつもの会話を監視役（orchestrator）にして、ほかの会話を起こし・仕事を渡し・見回り・止め・再開させる",
   "author": { "name": "horiu" },
   "homepage": "https://github.com/horiu/inline-agent-orchestrator",

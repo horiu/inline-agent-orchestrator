@@ -7,7 +7,7 @@
 複数の作業をまとめて1つのセッションに依頼すると、そのセッションがオーケストレーターとして動きます。作業ごとに別のセッションを起動して進捗を監視し、判断が必要な点だけをまとめて確認します。新しいアプリや画面を覚える必要はありません。
 
 > [!NOTE]
-> 試作版（v0.3.0）です。単体テストは通過していますが、実際の Claude Code・Codex での動作検証はまだ行っていません。ご利用の前に「[動作確認](#動作確認)」の手順をお試しください。
+> 試作版（v0.4.0）です。単体テストは通過していますが、実際の Claude Code・Codex での動作検証はまだ行っていません。ご利用の前に「[動作確認](#動作確認)」の手順をお試しください。
 
 ## 特長
 
@@ -93,6 +93,7 @@ Codex を再起動すれば準備完了です。セットアップスクリプ�
 
 - **追加の作業もオーケストレーターへ** — 同じ箇所を扱っているセッションがあればそこへ追加し、関係がなければ新しいセッションを起動します
 - **作業中のセッションを確認する** — Claude Code では `claude agents` で一覧を表示し、`claude attach <ID>` で開きます。Codex では `codex agents` と `codex resume <ID>` を使います。開いたセッションに直接指示することもできます
+- **モデルやエフォートを変える** — 「fix-login はもっと深く考えさせて」「設計が終わったら実装用の設定に切り替えて」のように依頼すると、次の指示から切り替わります
 - **オーケストレーターに話しかける** — 監視中は応答が遅れることがあります。急ぐ場合は停止ボタン（Claude Code では Esc）で監視を止めてから入力してください。止めている間の出来事も失われず、次の監視で受け取ります
 
 ### 完了後
@@ -117,7 +118,8 @@ Codex を再起動すれば準備完了です。セットアップスクリプ�
 | `pauseAtPct` | `95` | 使用量がこの割合（%）に達したら、新しいセッションを起動せず、実行中のセッションを一時停止する |
 | `watchIntervalMin` | `30` | 変化がないときにオーケストレーターが応答する間隔（分、最大 60） |
 | `pollSec` | `5` | セッションの状態を確認する間隔（秒） |
-| `defaults.model` / `defaults.effort` | — | 作業セッションのモデルとエフォート（省略時は各ツールの既定値） |
+| `profiles` | 下記 | 作業の種類ごとのモデルとエフォート |
+| `defaults.model` / `defaults.effort` | — | プロファイルを使わないときのモデルとエフォート（省略時は各ツールの既定値） |
 
 <details>
 <summary>Claude Code・Codex 固有の設定</summary>
@@ -133,9 +135,41 @@ Codex を再起動すれば準備完了です。セットアップスクリプ�
 
 </details>
 
+### モデルとエフォートの使い分け
+
+オーケストレーターは、作業の種類に合ったプロファイルを選んでセッションを起動します。既定では次のおすすめの設定が入っています。
+
+| プロファイル | 用途 | Claude Code | Codex |
+| --- | --- | --- | --- |
+| `design` | 設計・方式の検討 | Opus・xhigh | xhigh |
+| `debug` | 原因の分からない不具合の調査 | Opus・high | high |
+| `implement` | 通常の実装・修正 | Opus・medium | medium |
+| `review` | コードレビュー | Opus・high | high |
+| `writing` | ドキュメントや画面の文言の作成・修正 | Sonnet・high | high |
+| `routine` | 手順の決まった作業・確認 | Sonnet・medium | medium |
+
+- 判断に迷う作業では、強い方のプロファイルを選びます。性能が足りずにやり直すほうが、結果的に高くつくためです
+- 原因の調査が1回で絞り込めない場合は、途中でエフォートを xhigh に上げます
+- Codex のモデル名はリリースごとに変わるため、Codex ではエフォートだけを指定し、モデルは Codex の既定値を使います
+
+設定を変えたい場合は、`config.json` の `profiles` に同じ名前で書くと置き換わり、`null` にすると削除できます。新しい名前のプロファイルを追加することもできます。
+
+```json
+{
+  "profiles": {
+    "design": {
+      "description": "設計・方式の検討",
+      "claude": { "model": "opus", "effort": "max" },
+      "codex": { "model": "<モデル名>", "effort": "xhigh" }
+    },
+    "routine": null
+  }
+}
+```
+
 ### 独自のルールを追加する
 
-モデルの使い分けや、重い処理の同時実行数などのルールは、データフォルダの `local-rules.md` に書いておくと、オーケストレーターが最初に読み込みます。書き方は [`local-rules.example.md`](skills/manage-sessions/local-rules.example.md) を参考にしてください。
+プロファイルの例外や、重い処理の同時実行数などのルールは、データフォルダの `local-rules.md` に書いておくと、オーケストレーターが最初に読み込みます。書き方は [`local-rules.example.md`](skills/manage-sessions/local-rules.example.md) を参考にしてください。
 
 自分で開いたセッションにも報告のルールを伝えたい場合は、[`AGENTS.snippet.md`](AGENTS.snippet.md) の内容を `~/.claude/CLAUDE.md`（Codex では `~/.codex/AGENTS.md`）の末尾に追記します。
 
@@ -187,11 +221,11 @@ Claude Code にも Codex にも、AI が別のセッションを操作するた�
 | --- | --- | --- | --- | --- |
 | `list_sessions` | オーケストレーター | 管理中、またはすべてのセッションの一覧と状態 | `thread/read`・`thread/list` | `claude agents --json` |
 | `read_session` | オーケストレーター | 最近のやり取り | `thread/turns/list` | `claude logs` |
-| `start_session` | オーケストレーター | セッションを起動し、名前を付けて最初の依頼を送る。上限を超える場合は起動せず、理由を返す | `thread/start`・`turn/start` | `claude --bg` |
-| `send_message` | オーケストレーター | 実行中のセッションにはターンの後に、停止中のセッションには続きとして送る | `thread/queue/add`・`turn/start`・`turn/steer` | 保持した後に `claude --resume --bg` |
+| `start_session` | オーケストレーター | プロファイル（またはモデル・エフォート）を指定してセッションを起動し、名前を付けて最初の依頼を送る。上限を超える場合は起動せず、理由を返す | `thread/start`・`turn/start` | `claude --bg` |
+| `send_message` | オーケストレーター | 実行中のセッションにはターンの後に、停止中のセッションには続きとして送る。モデルやエフォートの変更も可能 | `thread/queue/add`・`turn/start`・`turn/steer` | 保持した後に `claude --resume --bg` |
 | `stop_session` | オーケストレーター | 実行中のターンを停止する | `turn/interrupt` | `claude stop` |
 | `set_session_name` | オーケストレーター | 名前を変更する | `thread/name/set` | 記録のみ |
-| `get_usage` | オーケストレーター | 使用量・空きメモリ・実行数と、新しく起動できるかどうか | `account/rateLimits/read` | `usage.json` |
+| `get_usage` | オーケストレーター | 使用量・空きメモリ・実行数、新しく起動できるかどうか、プロファイルの一覧 | `account/rateLimits/read` | `usage.json` |
 | `update_session` | オーケストレーター | 記録（状態・メモ・保留）を更新する | `state.json` | `state.json` |
 | `wait_events` | オーケストレーター | 状態の変化・報告・承認待ち・メモリ不足・使用量の超過と回復を待つ | `thread/read` | `claude agents --json` |
 | `read_reports` | オーケストレーター | 報告を読む | `reports.jsonl` | `reports.jsonl` |

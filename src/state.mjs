@@ -28,6 +28,41 @@ export const DEFAULT_CONFIG = {
   // server itself checks every pollSec without using the model.
   watchIntervalMin: 30,
   pollSec: 5,
+  // Recommended model and effort per kind of work. The manager picks one with
+  // start_session's `profile`. Codex model names change between releases, so
+  // Codex profiles set only the effort and keep the user's default model.
+  profiles: {
+    design: {
+      description: '設計・方式の検討（API・データ構造・画面の構成を決める。1〜2ファイルで済む小さな修正は除く）',
+      claude: { model: 'opus', effort: 'xhigh' },
+      codex: { effort: 'xhigh' },
+    },
+    debug: {
+      description: '原因の分からない不具合の調査（1回で原因が絞れなければ effort を xhigh に上げる）',
+      claude: { model: 'opus', effort: 'high' },
+      codex: { effort: 'high' },
+    },
+    implement: {
+      description: 'ふつうの実装・修正',
+      claude: { model: 'opus', effort: 'medium' },
+      codex: { effort: 'medium' },
+    },
+    review: {
+      description: 'コードレビュー',
+      claude: { model: 'opus', effort: 'high' },
+      codex: { effort: 'high' },
+    },
+    writing: {
+      description: '人が読む文章の作成・修正（ドキュメント・画面の文言）',
+      claude: { model: 'sonnet', effort: 'high' },
+      codex: { effort: 'high' },
+    },
+    routine: {
+      description: '手順の決まった作業・確認（画面の確認・定型の修正・調べものの要約）',
+      claude: { model: 'sonnet', effort: 'medium' },
+      codex: { effort: 'medium' },
+    },
+  },
 };
 
 // The watch never waits longer than this (prompt caches last about an hour).
@@ -96,6 +131,11 @@ export class Store {
       ...user,
       defaults: { ...DEFAULT_CONFIG.defaults, ...(user.defaults ?? {}) },
       claude: { ...DEFAULT_CONFIG.claude, ...(user.claude ?? {}) },
+      // A profile the user writes replaces the built-in one of the same name;
+      // `null` removes it.
+      profiles: Object.fromEntries(
+        Object.entries({ ...DEFAULT_CONFIG.profiles, ...(user.profiles ?? {}) }).filter(([, p]) => p && typeof p === 'object'),
+      ),
     };
   }
 

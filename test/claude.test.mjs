@@ -383,6 +383,99 @@ test('a session paused while its queue is being delivered stays paused', async (
   assert.equal(store.state().targets[SID].status, 'paused_usage');
 });
 
+test('a profile picks model and effort; explicit values win; the record keeps the profile', async () => {
+  await tools.start_session.handler({ name: 'a', cwd: '/r', prompt: 'p', profile: 'design' });
+  const args = calls('--bg')[0].args;
+  assert.equal(args[args.indexOf('--model') + 1], 'opus');
+  assert.equal(args[args.indexOf('--effort') + 1], 'xhigh');
+  assert.equal(store.state().targets[SID].profile, 'design');
+  await tools.start_session.handler({ name: 'b', cwd: '/r', prompt: 'p', profile: 'writing', effort: 'max' });
+  const b = calls('--bg')[1].args;
+  assert.equal(b[b.indexOf('--model') + 1], 'sonnet');
+  assert.equal(b[b.indexOf('--effort') + 1], 'max');
+  const u = await tools.get_usage.handler({});
+  assert.deepEqual(
+    u.profiles.map((p) => [p.name, p.model, p.effort]),
+    [['design', 'opus', 'xhigh'], ['debug', 'opus', 'high'], ['implement', 'opus', 'medium'], ['review', 'opus', 'high'], ['writing', 'sonnet', 'high'], ['routine', 'sonnet', 'medium']],
+  );
+});
+
+test('send_message changes model and effort: at once for an idle session, at delivery for a busy one', async () => {
+  await tools.start_session.handler({ name: 'a', cwd: '/r', prompt: 'p', profile: 'implement' });
+  fake.set(SID, { state: 'done', status: 'idle' });
+  const r = await tools.send_message.handler({ threadId: SID, message: '原因を探して', profile: 'debug' });
+  assert.deepEqual(r.changed, { model: 'opus', effort: 'high' });
+  const resume = calls('--resume')[0].args;
+  assert.equal(resume[resume.indexOf('--effort') + 1], 'high');
+  assert.equal(store.state().targets[SID].profile, 'debug');
+
+  // Busy: held, and delivered with the new values.
+  clock += 10_000;
+  await tools.send_message.handler({ threadId: SID, message: 'もっと深く', effort: 'xhigh' });
+  assert.equal(store.state().targets[SID].effort, 'xhigh');
+  assert.equal(store.state().targets[SID].profile, null, 'no longer exactly the profile');
+  fake.set(SID, { state: 'done', status: 'idle' });
+  clock += 10_000;
+  await tools.wait_events.handler({});
+  const delivered = calls('--resume')[1].args;
+  assert.equal(delivered[delivered.indexOf('--effort') + 1], 'xhigh');
+  assert.equal(delivered[delivered.indexOf('--model') + 1], 'opus');
+});
+
+test('a session the manager did not start gets only the requested model and effort', async () => {
+  const other = 'cccccccc-0000-4000-8000-000000000000';
+  fake.sessions.push({ id: 'c0c0c0c0', sessionId: other, name: '人の会話', kind: 'background', state: 'done', status: 'idle', cwd: '/r' });
+  await tools.send_message.handler({ threadId: other, message: 'やあ', model: 'sonnet' });
+  assert.deepEqual(calls('--resume')[0].args, ['--resume', other, '--bg', '--model', 'sonnet', 'やあ']);
+});
+
+test('a change sent while another delivery is running reaches the next delivery', async () => {
+  await tools.start_session.handler({ name: 'a', cwd: '/r', prompt: 'p', profile: 'implement' });
+  await tools.start_session.handler({ name: 'b', cwd: '/r', prompt: 'p', profile: 'implement' });
+  const [a, b] = fake.sessions;
+  store.updateTarget(a.sessionId, { queue: ['A1'] });
+  store.updateTarget(b.sessionId, { queue: ['B1'] });
+  fake.set(a.id, { state: 'done', status: 'idle' });
+  fake.set(b.id, { state: 'done', status: 'idle' });
+  const run = fake.run;
+  let sent = false;
+  fake.run = async (path, args, opts) => {
+    // While A is being delivered, the manager raises B's effort.
+    if (args[0] === '--resume' && args[1] === a.sessionId && !sent) {
+      sent = true;
+      fake.set(b.id, { state: 'working', status: 'busy' });
+      await tools.send_message.handler({ threadId: b.sessionId, message: 'B2', effort: 'xhigh' });
+      fake.set(b.id, { state: 'done', status: 'idle' });
+    }
+    return run(path, args, opts);
+  };
+  backend = claudeBackend({ store, claudePath: 'claude', permissionMode: 'acceptEdits', run: fake.run, now: () => clock });
+  await backend.tick(store.state().targets);
+  const toB = fake.calls.find((c) => c.args[0] === '--resume' && c.args[1] === b.sessionId).args;
+  assert.equal(toB[toB.indexOf('--effort') + 1], 'xhigh');
+  assert.equal(toB.at(-1), 'B1\n\nB2');
+});
+
+test('profile names are checked as own keys, and a mixed request is not labelled with the profile', async () => {
+  await assert.rejects(tools.start_session.handler({ name: 'x', cwd: '/r', prompt: 'p', profile: 'constructor' }), /profile「constructor」はありません/);
+  await tools.start_session.handler({ name: 'a', cwd: '/r', prompt: 'p', profile: 'writing', effort: 'max' });
+  assert.equal(store.state().targets[SID].profile, null);
+  setup({ profiles: { codexOnly: { description: 'x', codex: { effort: 'low' } } } });
+  await tools.start_session.handler({ name: 'a', cwd: '/r', prompt: 'p' });
+  fake.set(SID, { state: 'done', status: 'idle' });
+  await assert.rejects(tools.send_message.handler({ threadId: SID, message: 'x', profile: 'codexOnly' }), /Claude Code 用のモデル・エフォートがありません/);
+});
+
+test('profiles in config.json replace or remove the built-in ones', async () => {
+  setup({ profiles: { design: { description: '設計', claude: { model: 'fable', effort: 'max' } }, routine: null, docs: { description: '文書', claude: { model: 'haiku' } } } });
+  const u = await tools.get_usage.handler({});
+  const by = Object.fromEntries(u.profiles.map((p) => [p.name, p]));
+  assert.equal(by.design.model, 'fable');
+  assert.equal(by.routine, undefined);
+  assert.equal(by.docs.effort, null);
+  assert.equal(by.implement.model, 'opus', 'others stay');
+});
+
 test('worker role exposes only report', () => {
   const only = toolsForRole(tools, 'worker');
   assert.deepEqual(Object.keys(only), ['report']);

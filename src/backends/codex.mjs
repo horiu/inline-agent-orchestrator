@@ -132,9 +132,15 @@ export function codexBackend({ client }) {
       return { threadId, turnId: turn.turn?.id ?? null, model: started.model ?? model ?? null, nameError };
     },
 
-    async send(id, message, mode) {
+    // change: { model?, effort? } for this turn and the turns after it
+    // (turn/start overrides "for this turn and subsequent turns").
+    async send(id, message, mode, _target, change = {}) {
       const status = (await readThread(id)).status?.type;
       const how = mode === 'auto' ? (status === 'active' ? 'queue' : 'start') : mode;
+      if (how !== 'start' && (change.model || change.effort))
+        throw new ToolError(
+          '動いている会話のモデル・エフォートは変えられません。今のターンが終わってから送るか、stop_session で止めてから送ってください',
+        );
       if (how === 'queue') {
         try {
           const res = await client.request('thread/queue/add', { threadId: id, input: textInput(message), clientUserMessageId: randomUUID() });
@@ -154,7 +160,10 @@ export function codexBackend({ client }) {
         return { previousStatus: status, delivery: 'steered', turnId: turn.id };
       }
       if (status !== 'active') await client.request('thread/resume', { threadId: id, excludeTurns: true });
-      const res = await client.request('turn/start', { threadId: id, input: textInput(message) });
+      const params = { threadId: id, input: textInput(message) };
+      if (change.model) params.model = change.model;
+      if (change.effort) params.effort = change.effort;
+      const res = await client.request('turn/start', params);
       return { previousStatus: status, delivery: 'started', turnId: res.turn?.id ?? null };
     },
 

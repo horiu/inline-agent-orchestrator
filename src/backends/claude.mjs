@@ -191,7 +191,9 @@ export function claudeBackend({ store, claudePath = 'claude', permissionMode = '
     // Only sessions this manager started (their record keeps the worker
     // instructions) are relaunched as workers; any other session keeps its own
     // permission mode and tools.
-    const options = target?.instructions ? workerOptions(target) : [];
+    const options = target?.instructions
+      ? workerOptions(target)
+      : [...(target?.model ? ['--model', target.model] : []), ...(target?.effort ? ['--effort', target.effort] : [])];
     const out = await cli(['--resume', sessionId, '--bg', ...options, message], { cwd });
     const jobId = SHORT_ID.exec(out)?.[1] ?? null;
     let copySid = (out.match(new RegExp(UUID.source, 'gi')) ?? []).find((u) => u.toLowerCase() !== sessionId.toLowerCase()) ?? null;
@@ -278,7 +280,9 @@ export function claudeBackend({ store, claudePath = 'claude', permissionMode = '
       return { threadId, jobId: entry?.id ?? jobId, sessionId, model: model ?? null, nameError: null };
     },
 
-    async send(id, message, mode, target) {
+    // change: { model?, effort? } from this message on. A held message is
+    // delivered with the record's values, which the caller updates.
+    async send(id, message, mode, target, change = {}) {
       const entry = find(await agents({ fresh: true }), id, target);
       const status = mapEntry(entry).status;
       const how = mode === 'auto' ? (status === 'active' ? 'queue' : 'start') : mode;
@@ -286,11 +290,12 @@ export function claudeBackend({ store, claudePath = 'claude', permissionMode = '
       if (how === 'queue') {
         // The CLI has no queue for background sessions; keep it here and
         // deliver it when the session is idle (tick).
+        // Queue and settings in one write, so a delivery never sees one without the other.
         const queue = [...(store.state().targets[id]?.queue ?? []), message];
-        store.updateTarget(id, { queue });
+        store.updateTarget(id, { queue, ...change });
         return { previousStatus: status, delivery: 'queued', queued: queue.length };
       }
-      const res = await resume(id, target, sessionIdOf(id, target, entry), message, entry?.cwd ?? target?.cwd);
+      const res = await resume(id, { ...(target ?? {}), ...change }, sessionIdOf(id, target, entry), message, entry?.cwd ?? target?.cwd);
       return { previousStatus: status, delivery: 'started', ...res };
     },
 
@@ -348,11 +353,14 @@ export function claudeBackend({ store, claudePath = 'claude', permissionMode = '
           if (mapEntry(entry).status === 'active') continue;
           // After a failed delivery, wait before trying again (and report once).
           if (target.queueFailedAt && now() - Date.parse(target.queueFailedAt) < 5 * 60 * 1000) continue;
-          const batch = store.state().targets[id]?.queue ?? [];
-          if (!batch.length) continue;
+          // Read the record again: a send_message during an earlier delivery
+          // in this loop may have queued more and changed model or effort.
+          const current = store.state().targets[id] ?? target;
+          const batch = current.queue ?? [];
+          if (!batch.length || !DELIVER_TO.has(current.status)) continue;
           store.updateTarget(id, { queue: [] });
           try {
-            const res = await resume(id, target, sessionIdOf(id, target, entry), batch.join('\n\n'), entry?.cwd ?? target.cwd);
+            const res = await resume(id, current, sessionIdOf(id, current, entry), batch.join('\n\n'), entry?.cwd ?? current.cwd);
             // The manager may have stopped or paused it while the CLI ran;
             // keep that mark instead of writing `running` over it.
             const still = DELIVER_TO.has(store.state().targets[id]?.status);

@@ -56,6 +56,32 @@ export function createTools({ backend, client, store, sys = {} }) {
       .map(([id]) => id);
   }
 
+  // Model and effort for a run: explicit values win, then the profile. The
+  // profile name is recorded only when the values are exactly the profile's.
+  function resolveRun(cfg, { profile, model, effort }) {
+    let p = null;
+    if (profile) {
+      const profiles = cfg.profiles ?? {};
+      p = Object.hasOwn(profiles, profile) ? profiles[profile] : null;
+      if (!p) throw new ToolError(`profile「${profile}」はありません。使えるのは: ${Object.keys(profiles).join('、') || '（なし）'}`);
+    }
+    const forAgent = p?.[be.agent] ?? {};
+    return {
+      profile: profile && !model && !effort ? profile : null,
+      model: model ?? forAgent.model ?? null,
+      effort: effort ?? forAgent.effort ?? null,
+    };
+  }
+
+  function profileList(cfg) {
+    return Object.entries(cfg.profiles ?? {}).map(([name, p]) => ({
+      name,
+      description: p.description ?? '',
+      model: p[be.agent]?.model ?? null,
+      effort: p[be.agent]?.effort ?? null,
+    }));
+  }
+
   // Load guard: number of running conversations, free memory, usage limits.
   async function guard() {
     const cfg = store.config();
@@ -146,7 +172,7 @@ export function createTools({ backend, client, store, sys = {} }) {
 
     start_session: {
       description:
-        '新しい作業の会話を起こして、最初の依頼を送る（名前・作業フォルダ・モデル・エフォート）。会話はこの会話とは別に動き、この会話が終わっても動き続ける。動いている数・空きメモリ・利用枠の上限を超えるときは起こさずに理由を返す（force=true で無視）。名前は管理中の会話と重ねない。',
+        '新しい作業の会話を起こして、最初の依頼を送る（名前・作業フォルダ・モデル・エフォート）。モデルとエフォートは、仕事の種類に合う profile（get_usage の profiles）で選ぶのが基本。model・effort を書くと profile より優先する。会話はこの会話とは別に動き、この会話が終わっても動き続ける。動いている数・空きメモリ・利用枠の上限を超えるときは起こさずに理由を返す（force=true で無視）。名前は管理中の会話と重ねない。',
       inputSchema: {
         type: 'object',
         required: ['name', 'cwd', 'prompt'],
@@ -154,8 +180,9 @@ export function createTools({ backend, client, store, sys = {} }) {
           name: { type: 'string', description: '会話の名前（仕事を一言で。管理中の会話と重ねない）' },
           cwd: { type: 'string', description: '作業フォルダ（絶対パス）' },
           prompt: { type: 'string', description: '最初の依頼（何を・どこまで・報告のしかた）' },
-          model: { type: 'string', description: '省略時は config の defaults.model、それも無ければ既定のモデル' },
-          effort: { type: 'string', description: 'reasoning effort（例 low / medium / high / xhigh）。省略時は既定' },
+          profile: { type: 'string', description: '仕事の種類（get_usage の profiles の name。例 design / debug / implement / review / writing / routine）' },
+          model: { type: 'string', description: 'profile より優先。どちらも無ければ config の defaults.model、それも無ければ既定のモデル' },
+          effort: { type: 'string', description: 'reasoning effort（例 low / medium / high / xhigh）。profile より優先。省略時は既定' },
           sandbox: { type: 'string', enum: ['read-only', 'workspace-write', 'danger-full-access'], description: 'Codex だけ' },
           approvalPolicy: { type: 'string', enum: ['untrusted', 'on-request', 'never'], description: 'Codex だけ' },
           permissionMode: {
@@ -167,8 +194,9 @@ export function createTools({ backend, client, store, sys = {} }) {
           force: { type: 'boolean', default: false },
         },
       },
-      async handler({ name, cwd, prompt, model, effort, sandbox, approvalPolicy, permissionMode, area, force = false }) {
+      async handler({ name, cwd, prompt, profile, model, effort, sandbox, approvalPolicy, permissionMode, area, force = false }) {
         const cfg = store.config();
+        const run = resolveRun(cfg, { profile, model, effort });
         // pending records are work waiting to be started, often under this name.
         // Old names (aliases) count too: reports written under them must keep
         // pointing at one session.
@@ -181,8 +209,8 @@ export function createTools({ backend, client, store, sys = {} }) {
           if (!g.canStartNew) return { started: false, reasons: g.reasons, guard: g };
         }
         const d = cfg.defaults;
-        const useModel = model ?? d.model ?? null;
-        const useEffort = effort ?? d.effort ?? null;
+        const useModel = run.model ?? d.model ?? null;
+        const useEffort = run.effort ?? d.effort ?? null;
         let createdId = null;
         try {
           const res = await be.start(
@@ -219,6 +247,7 @@ export function createTools({ backend, client, store, sys = {} }) {
             note: null,
             model: res.model ?? useModel,
             effort: useEffort,
+            profile: run.profile,
             lastSeen: { status: 'active', activeFlags: [] },
           });
           const target = store.state().targets[res.threadId];
@@ -226,7 +255,9 @@ export function createTools({ backend, client, store, sys = {} }) {
             started: true,
             threadId: res.threadId,
             turnId: res.turnId ?? null,
-            model: res.model ?? null,
+            profile: run.profile,
+            model: res.model ?? useModel,
+            effort: useEffort,
             nameError: res.nameError ?? null,
             open: be.openCommand(res.threadId, target),
           };
@@ -239,7 +270,7 @@ export function createTools({ backend, client, store, sys = {} }) {
 
     send_message: {
       description:
-        '会話へ連絡・依頼を送る。mode="auto"（既定）: 動いている会話には今のターンの後に回す（queue）、止まっている会話は続きから新しいターンを始める。mode="steer" は動いているターンに割り込んで足す（Codex だけ）。',
+        '会話へ連絡・依頼を送る。mode="auto"（既定）: 動いている会話には今のターンの後に回す（queue）、止まっている会話は続きから新しいターンを始める。mode="steer" は動いているターンに割り込んで足す（Codex だけ）。profile・model・effort を付けると、この依頼からモデルとエフォートを変える（以後の続きにも効く。Codex は止まっている会話にだけ。Claude Code は動いていれば、預かって届けるときから）。',
       inputSchema: {
         type: 'object',
         required: ['threadId', 'message'],
@@ -247,15 +278,30 @@ export function createTools({ backend, client, store, sys = {} }) {
           threadId: { type: 'string' },
           message: { type: 'string' },
           mode: { type: 'string', enum: ['auto', 'queue', 'steer', 'start'], default: 'auto' },
+          profile: { type: 'string', description: 'モデルとエフォートをこの仕事の種類のものに変える（get_usage の profiles の name）' },
+          model: { type: 'string', description: 'モデルを変える（profile より優先）' },
+          effort: { type: 'string', description: 'エフォートを変える（profile より優先）' },
         },
       },
-      async handler({ threadId, message, mode = 'auto' }) {
-        const result = await be.send(threadId, message, mode, store.state().targets[threadId]);
+      async handler({ threadId, message, mode = 'auto', profile, model, effort }) {
+        const asked = profile || model || effort;
+        const run = asked ? resolveRun(store.config(), { profile, model, effort }) : null;
+        const change = {};
+        if (run?.model) change.model = run.model;
+        if (run?.effort) change.effort = run.effort;
+        if (asked && !Object.keys(change).length)
+          throw new ToolError(`profile「${profile}」には ${be.agent === 'claude' ? 'Claude Code' : 'Codex'} 用のモデル・エフォートがありません`);
+        const result = await be.send(threadId, message, mode, store.state().targets[threadId], change);
         // The watch compares with lastSeen; mark the thread active so a turn
         // that ends before the next wait_events is still reported.
         if (store.state().targets[threadId])
-          store.updateTarget(threadId, { status: 'running', lastSeen: { status: 'active', activeFlags: [] } });
-        return { threadId, ...result };
+          store.updateTarget(threadId, {
+            status: 'running',
+            lastSeen: { status: 'active', activeFlags: [] },
+            ...change,
+            ...(asked ? { profile: run.profile } : {}),
+          });
+        return { threadId, ...result, ...(asked ? { changed: change } : {}) };
       },
     },
 
@@ -299,11 +345,11 @@ export function createTools({ backend, client, store, sys = {} }) {
 
     get_usage: {
       description:
-        '利用枠（窓ごとの使用率とリセットの時刻）・空きメモリ・動いている会話の数と、いま新しく動かしてよいか（canStartNew と理由）を返す。',
+        '利用枠（窓ごとの使用率とリセットの時刻）・空きメモリ・動いている会話の数と、いま新しく動かしてよいか（canStartNew と理由）を返す。profiles は仕事の種類ごとのおすすめのモデルとエフォート（null は、start_session ではそれぞれの既定、send_message では今の値のまま）。',
       readOnly: true,
       inputSchema: { type: 'object', properties: {} },
       async handler() {
-        return guard();
+        return { ...(await guard()), profiles: profileList(store.config()) };
       },
     },
 

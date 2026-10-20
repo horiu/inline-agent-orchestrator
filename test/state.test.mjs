@@ -48,3 +48,10 @@ test('readReports starts over when the file was truncated', () => {
   assert.equal(s.hasUnreadReports(), true);
   assert.deepEqual(s.readReports().map((r) => r.text), ['new']);
 });
+
+test('config.example.json shows exactly the built-in defaults', async () => {
+  const { readFileSync } = await import('node:fs');
+  const { DEFAULT_CONFIG } = await import('../src/state.mjs');
+  const example = JSON.parse(readFileSync(new URL('../config.example.json', import.meta.url), 'utf8'));
+  assert.deepEqual(example, DEFAULT_CONFIG);
+});
