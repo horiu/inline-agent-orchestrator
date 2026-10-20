@@ -45,31 +45,39 @@
 
 ## クイックスタート
 
-> [!TIP]
-> このページのコマンドのうち、`claude`・`git`・`node` で始まるものは**ターミナル**（Windows では PowerShell、macOS・Linux ではターミナル）で実行します。`/` や `$` で始まるものは、Claude Code・Codex の**チャット欄**に入力します。
-
 ### Claude Code
 
-動作環境: Claude Code 2.1.292 以降、Node.js 20 以降
+動作環境: Claude Code 2.1.275 以降、Node.js 20 以降
 
-ターミナルで次のコマンドを実行します。
+Claude Code のチャット欄に次のコマンドを入力します。
+
+```text
+/plugin install inline-agent-orchestrator --marketplace horiu/inline-agent-orchestrator
+```
+
+マーケットプレイスの追加を確認されたら承認し、続く画面で「Install for you」を選ぶと、そのまま使えるようになります。初めて使うときに、使用量を読み取るための status line の設定を求められます。許可すると設定され、現在の status line の表示はそのまま残ります。
+
+<details>
+<summary>ターミナルからインストールする（デスクトップアプリ・VS Code をお使いの場合など）</summary>
+
+ターミナルで次のコマンドを実行し、Claude Code を再起動します（Claude Code 2.1.292 以降）。インストールしたプラグインは、ターミナル・デスクトップアプリ・VS Code のどれからでも使えます。
 
 ```bash
 claude plugin install inline-agent-orchestrator --marketplace horiu/inline-agent-orchestrator
 ```
 
-Claude Code のチャット欄から入れることもできます（2.1.275 以降）。`/plugin install inline-agent-orchestrator --marketplace horiu/inline-agent-orchestrator` と入力し、表示される画面で「Install for you」を選びます。
+VS Code では、チャット欄に `/plugins` と入力して開く画面からもインストールできます。Marketplaces タブで `horiu/inline-agent-orchestrator` を追加し、Plugins タブでインストールします。
 
-Claude Code を再起動すれば（またはチャット欄で `/reload-plugins` と入力すれば）準備完了です。初めて使うときに、使用量を読み取るための status line の設定を求められます。許可すると設定され、現在の status line の表示はそのまま残ります。
+</details>
 
 <details>
-<summary>Claude Code 2.1.257〜2.1.291 をお使いの場合</summary>
+<summary>Claude Code 2.1.257〜2.1.274 をお使いの場合</summary>
 
-ターミナルで次の2つのコマンドを順に実行します。
+チャット欄に次のコマンドを1行ずつ入力します。
 
-```bash
-claude plugin marketplace add horiu/inline-agent-orchestrator
-claude plugin install inline-agent-orchestrator@inline-agent-orchestrator
+```text
+/plugin marketplace add horiu/inline-agent-orchestrator
+/plugin install inline-agent-orchestrator@inline-agent-orchestrator
 ```
 
 </details>
@@ -78,7 +86,7 @@ claude plugin install inline-agent-orchestrator@inline-agent-orchestrator
 
 動作環境: Codex CLI 0.162 以降（デスクトップアプリのみを使う場合も必要です）、Node.js 20 以降、git
 
-ターミナルで次の2つのコマンドを順に実行します。
+ターミナルで次のコマンドを実行します。
 
 ```bash
 git clone https://github.com/horiu/inline-agent-orchestrator.git $HOME/tools/inline-agent-orchestrator
@@ -192,10 +200,30 @@ Codex を再起動すれば準備完了です。セットアップスクリプ�
 
 ## 更新とアンインストール
 
-| | 更新 | アンインストール |
-| --- | --- | --- |
-| Claude Code | ターミナルで `claude plugin update inline-agent-orchestrator@inline-agent-orchestrator` を実行し、Claude Code を再起動（またはチャット欄で `/reload-plugins` を入力）。チャット欄では、`/plugin` の Installed タブでこのプラグインを開き「Update now」を選んでも更新できます | チャット欄でオーケストレーターに「status line を元に戻して」と依頼してから、ターミナルで `claude plugin uninstall inline-agent-orchestrator@inline-agent-orchestrator` を実行 |
-| Codex | ターミナルでインストール先のフォルダに移動し、`git pull` と `node src/setup.mjs codex` を実行して、Codex を再起動 | `~/.codex/config.toml` の `[mcp_servers.session-manager]` と、`~/.agents/skills/manage-sessions/` を削除 |
+### Claude Code
+
+**更新**: チャット欄に `/plugin` と入力し、Installed タブでこのプラグインを開いて「Update now」を選びます。新しい版は次のセッションから使われます。今のセッションで使うには、チャット欄に `/reload-plugins` と入力します。
+
+このプラグインは、標準では自動で更新されません。自動で更新したい場合は、`/plugin` の Marketplaces タブで `inline-agent-orchestrator` を選び、「Enable auto-update」を選びます。
+
+**アンインストール**: まずチャット欄でオーケストレーターに「status line を元に戻して」と依頼します。続けて、チャット欄に次のコマンドを入力し、開いた画面でアンインストールを確定します。
+
+```text
+/plugin uninstall inline-agent-orchestrator@inline-agent-orchestrator
+```
+
+ターミナルでは、`claude plugin update inline-agent-orchestrator@inline-agent-orchestrator`（更新）と `claude plugin uninstall inline-agent-orchestrator@inline-agent-orchestrator`（アンインストール）を使います。
+
+### Codex
+
+**更新**: ターミナルで次のコマンドを実行し、Codex を再起動します。
+
+```bash
+git -C $HOME/tools/inline-agent-orchestrator pull
+node $HOME/tools/inline-agent-orchestrator/src/setup.mjs codex
+```
+
+**アンインストール**: `~/.codex/config.toml` から `[mcp_servers.session-manager]` の項目を削除し、`~/.agents/skills/manage-sessions/` フォルダを削除します。
 
 ## 仕組み
 
@@ -266,7 +294,7 @@ Claude Code にも Codex にも、AI が別のセッションを操作するた�
 
 | # | 確認項目 | 手順 | うまくいかない場合 |
 | --- | --- | --- | --- |
-| C1 | インストール | ターミナルで実行した `claude plugin list` に表示されるか。チャット欄で `/mcp` を開き、プラグインの `session-manager` が接続されているか | `node --version` が 20 以上か確認する |
+| C1 | インストール | チャット欄で `/plugin` を開き、Installed タブに表示されるか。`/mcp` を開き、プラグインの `session-manager` が接続されているか | `node --version` が 20 以上か確認する |
 | C2 | ツールと使用量 | `/inline-agent-orchestrator:manage-sessions` を実行 → status line の設定を許可 → しばらく待ってから「`get_usage` を呼んで」と依頼 → 使用量（5h・weekly）と空きメモリが表示されるか | `~/.claude/settings.json` の `statusLine` と `~/.claude/session-manager-mcp/usage.json` を確認する |
 | C3 | セッションの起動 | 試すフォルダで一度 `claude` を起動し、フォルダを信頼しておく。その後「`start_session` で、名前は『試し』、作業フォルダはそのフォルダ、依頼は『ファイル数を数えて report で報告して』」と依頼 → `claude agents` に「試し」が表示されるか | ツールが返したエラーメッセージを確認する |
 | C4 | 報告の受信 | `wait_events` で `report`（done）を受信できるか。`claude attach <ID>` → `/mcp` で、作業セッションに `session-report` が表示され、オーケストレーター用のツールが使えないか | `~/.claude/session-manager-mcp/worker-mcp.json` を確認する |
@@ -300,7 +328,7 @@ Claude Code にも Codex にも、AI が別のセッションを操作するた�
 | `claude agents --json returned something that is not JSON`（Claude Code） | CLI を更新する。agent view の状態は `claude daemon status` で確認できる |
 | `daemon start failed`（Codex） | Windows では、管理者権限の PowerShell からは起動できません。`CODEX_HOME` のパスが長すぎる場合も起動できません |
 | `thread/queue/add を使えません`（Codex） | Codex を更新する |
-| 監視がタイムアウトする（Codex） | ターミナルで、インストール先のフォルダから `node src/setup.mjs codex` を再実行する（`tool_timeout_sec` が修正されます） |
+| 監視がタイムアウトする（Codex） | ターミナルで `node $HOME/tools/inline-agent-orchestrator/src/setup.mjs codex` を再実行する（`tool_timeout_sec` が修正されます） |
 
 ### 不具合の報告
 
@@ -309,7 +337,7 @@ Claude Code にも Codex にも、AI が別のセッションを操作するた�
 - うまくいかなかった手順（C1〜C6、V1〜V5）と、`claude --version` または `codex --version`、`node --version` の出力
 - エラーメッセージ、またはコマンドの出力全体
 - データフォルダ内の `state.json`・`reports.jsonl`・`config.json`。Claude Code の場合は `worker-mcp.json`・`usage.json`・`statusline.json` も
-- Claude Code の場合は `claude plugin list` の出力、Codex の場合は `config.toml` の `[mcp_servers.session-manager]` セクション
+- Claude Code の場合はターミナルで実行した `claude plugin list` の出力、Codex の場合は `config.toml` の `[mcp_servers.session-manager]` セクション
 
 ## 開発
 
