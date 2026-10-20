@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { AppServerClient } from '../src/appserver.mjs';
 import { Store } from '../src/state.mjs';
 import { createTools, ToolError } from '../src/tools.mjs';
@@ -55,6 +56,7 @@ test('start_session: thread/start, name, first turn with id; recorded in state',
   assert.match(turn.input[0].text, /やること$/);
 
   const target = store.state().targets.thr_1;
+  assert.equal(target.codexWorker, true);
   assert.equal(target.status, 'running');
   assert.equal(target.area, 'src/ui');
   assert.equal(target.effort, 'high');
@@ -68,6 +70,31 @@ test('start_session uses config defaults and omits model/effort when unset', asy
   assert.equal(start.approvalPolicy, 'never');
   assert.ok(!('model' in start));
   assert.ok(!('effort' in calls('turn/start')[0].params));
+});
+
+test('Codex workers can report with approvalPolicy=never without granting manager tools', async () => {
+  await tools.start_session.handler({ name: 'reporter', cwd: '/repo', prompt: 'report', sandbox: 'read-only' });
+  const start = calls('thread/start')[0].params;
+  assert.equal(start.approvalPolicy, 'never');
+  assert.equal(start.sandbox, 'read-only');
+  assert.deepEqual(Object.keys(start.config).sort(), ['mcp_servers.session-manager.enabled', 'mcp_servers.session-report']);
+  assert.equal(start.config['mcp_servers.session-manager.enabled'], false);
+  const reporter = start.config['mcp_servers.session-report'];
+  assert.equal(reporter.command, process.execPath);
+  assert.deepEqual(reporter.args, [fileURLToPath(new URL('../src/server.mjs', import.meta.url))]);
+  assert.deepEqual(reporter.env, { CSM_AGENT: 'codex', CSM_ROLE: 'worker', CSM_HOME: store.dir });
+  assert.deepEqual(reporter.enabled_tools, ['report']);
+  assert.deepEqual(reporter.tools, { report: { approval_mode: 'approve' } });
+  assert.equal(reporter.required, true);
+
+  fake.threads.get('thr_1').status = { type: 'notLoaded' };
+  await tools.send_message.handler({ threadId: 'thr_1', message: 'report again' });
+  assert.deepEqual(calls('thread/resume')[0].params.config, start.config, 'reporting survives a resumed worker');
+
+  fake.addThread('manual', { status: { type: 'notLoaded' } });
+  store.updateTarget('manual', { name: 'manually tracked', status: 'running' });
+  await tools.send_message.handler({ threadId: 'manual', message: 'continue' });
+  assert.deepEqual(calls('thread/resume')[1].params, { threadId: 'manual', excludeTurns: true });
 });
 
 test('start_session refuses when the running limit is reached, unless force', async () => {

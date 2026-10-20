@@ -3,10 +3,29 @@
 // generated types in openai/codex codex-rs/app-server-protocol/schema/typescript.
 
 import { randomUUID } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 import { RpcError } from '../appserver.mjs';
 import { ToolError, iso, tail, windowLabel } from './common.mjs';
 
 const textInput = (text) => [{ type: 'text', text, text_elements: [] }];
+const SERVER_PATH = fileURLToPath(new URL('../server.mjs', import.meta.url));
+
+// Thread-local settings: only this worker's reporting tool is pre-approved.
+// Keep the manager and every other MCP tool's approval policy untouched.
+function workerConfig(reportDir) {
+  return {
+    'mcp_servers.session-manager.enabled': false,
+    'mcp_servers.session-report': {
+      command: process.execPath,
+      args: [SERVER_PATH],
+      env: { CSM_AGENT: 'codex', CSM_ROLE: 'worker', CSM_HOME: reportDir },
+      enabled_tools: ['report'],
+      required: true,
+      startup_timeout_sec: 20,
+      tools: { report: { approval_mode: 'approve' } },
+    },
+  };
+}
 
 function summarize(t, target) {
   return {
@@ -31,7 +50,7 @@ function itemText(item) {
   return '';
 }
 
-export function codexBackend({ client }) {
+export function codexBackend({ client, store }) {
   async function readThread(threadId) {
     const res = await client.request('thread/read', { threadId });
     return res.thread;
@@ -115,11 +134,11 @@ export function codexBackend({ client }) {
     // onCreated(threadId) is called as soon as the thread exists, so a failing
     // first turn still leaves the thread on record.
     async start({ name, cwd, model, effort, sandbox, approvalPolicy, instructions, firstMessage }, { onCreated }) {
-      const params = { cwd, sandbox, approvalPolicy, developerInstructions: instructions };
+      const params = { cwd, sandbox, approvalPolicy, developerInstructions: instructions, config: workerConfig(store.dir) };
       if (model) params.model = model;
       const started = await client.request('thread/start', params);
       const threadId = started.thread.id;
-      onCreated(threadId);
+      onCreated(threadId, { codexWorker: true });
       let nameError = null;
       try {
         await client.request('thread/name/set', { threadId, name });
@@ -134,7 +153,7 @@ export function codexBackend({ client }) {
 
     // change: { model?, effort? } for this turn and the turns after it
     // (turn/start overrides "for this turn and subsequent turns").
-    async send(id, message, mode, _target, change = {}) {
+    async send(id, message, mode, target, change = {}) {
       const status = (await readThread(id)).status?.type;
       const how = mode === 'auto' ? (status === 'active' ? 'queue' : 'start') : mode;
       if (how !== 'start' && (change.model || change.effort))
@@ -159,7 +178,13 @@ export function codexBackend({ client }) {
         await client.request('turn/steer', { threadId: id, input: textInput(message), expectedTurnId: turn.id });
         return { previousStatus: status, delivery: 'steered', turnId: turn.id };
       }
-      if (status !== 'active') await client.request('thread/resume', { threadId: id, excludeTurns: true });
+      if (status !== 'active') {
+        const resume = { threadId: id, excludeTurns: true };
+        // Config overrides are not persisted in the rollout. Reapply them
+        // when the manager resumes one of its workers, including after restart.
+        if (target?.codexWorker) resume.config = workerConfig(store.dir);
+        await client.request('thread/resume', resume);
+      }
       const params = { threadId: id, input: textInput(message) };
       if (change.model) params.model = change.model;
       if (change.effort) params.effort = change.effort;
