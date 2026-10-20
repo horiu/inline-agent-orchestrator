@@ -16,7 +16,7 @@ import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { WebSocketOverStream } from './ws.mjs';
 
-const CLIENT_INFO = { name: 'inline_agent_orchestrator', title: 'Inline Agent Orchestrator', version: '0.4.0' };
+const CLIENT_INFO = { name: 'inline_agent_orchestrator', title: 'Inline Agent Orchestrator', version: '0.4.1' };
 
 // codexPath: "codex", an absolute path, or an argv prefix such as
 // ["node", "/path/to/codex.js"].

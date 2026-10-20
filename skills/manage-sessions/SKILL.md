@@ -1,6 +1,6 @@
 ---
 name: manage-sessions
-description: この会話を「監視役」にして、ほかの会話（作業の会話）を自分で起こし・仕事を渡し・見回り・止め・再開させ、利用者の判断待ちをまとめて聞き、全部が終わるまで見届ける。Codex と Claude Code のどちらでも使える。「監視して」「並べて進めて」「manage-sessions」で使う。MCP サーバー session-manager の道具を使う。
+description: このセッションをオーケストレーターにして、作業ごとに別のセッションを起動・監視・停止・再開し、確認が必要な点をまとめて利用者に聞き、すべての作業が終わるまで見届ける。Claude Code・Codex のどちらでも使える。「監視して」「並行して進めて」「manage-sessions」「orchestrate」などの依頼で使う。MCP サーバー session-manager のツールを使う。
 ---
 
 # manage-sessions — 監視役の会話

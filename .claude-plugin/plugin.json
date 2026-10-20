@@ -1,8 +1,8 @@
 {
   "name": "inline-agent-orchestrator",
   "displayName": "Inline Agent Orchestrator",
-  "version": "0.4.0",
-  "description": "いつもの会話を監視役（orchestrator）にして、ほかの会話を起こし・仕事を渡し・見回り・止め・再開させる",
+  "version": "0.4.1",
+  "description": "Turn your everyday Claude Code or Codex session into an orchestrator that starts, monitors and steers other sessions.",
   "author": { "name": "horiu" },
   "homepage": "https://github.com/horiu/inline-agent-orchestrator",
   "repository": "https://github.com/horiu/inline-agent-orchestrator",

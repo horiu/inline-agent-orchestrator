@@ -1,12 +1,12 @@
 {
   "name": "inline-agent-orchestrator",
   "owner": { "name": "horiu" },
-  "description": "Inline Agent Orchestrator のプラグイン",
+  "description": "Marketplace for the Inline Agent Orchestrator plugin",
   "plugins": [
     {
       "name": "inline-agent-orchestrator",
       "source": "./",
-      "description": "いつもの会話を監視役（orchestrator）にして、ほかの会話を起こし・仕事を渡し・見回り・止め・再開させる"
+      "description": "Turn your everyday Claude Code or Codex session into an orchestrator that starts, monitors and steers other sessions."
     }
   ]
 }

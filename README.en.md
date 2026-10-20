@@ -7,7 +7,7 @@ English | [日本語](README.md)
 Hand a batch of tasks to a single session, and it becomes the orchestrator: it starts a separate session for each task, monitors their progress, and brings back only the decisions that need you, all at once. There is no new app or UI to learn.
 
 > [!NOTE]
-> This is a prototype (v0.4.0). The unit tests pass, but it has not yet been verified against real Claude Code or Codex sessions. Please run through [Verification](#verification) before relying on it.
+> This is a prototype (v0.4.1). The unit tests pass, but it has not yet been verified against real Claude Code or Codex sessions. Please run through [Verification](#verification) before relying on it.
 >
 > Messages from the tools and the skill's instructions are currently written in Japanese. The model still understands and answers in your language.
 
