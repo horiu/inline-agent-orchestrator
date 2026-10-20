@@ -8,9 +8,10 @@ import { AppServerClient, daemonConnector, embeddedConnector } from './appserver
 import { claudeBackend } from './backends/claude.mjs';
 import { codexBackend } from './backends/codex.mjs';
 import { Store, agentOf } from './state.mjs';
+import { refreshStatuslineCopy } from './setup.mjs';
 import { createTools, ToolError } from './tools.mjs';
 
-export const SERVER_INFO = { name: 'inline-agent-orchestrator', version: '0.2.0' };
+export const SERVER_INFO = { name: 'inline-agent-orchestrator', version: '0.3.0' };
 
 // Worker conversations (CSM_ROLE=worker) see only `report`.
 export function toolsForRole(tools, role) {
@@ -118,6 +119,12 @@ export function main() {
   let client = null;
   if (agent === 'claude') {
     backend = claudeBackend({ store, claudePath: cfg.claude.path, permissionMode: cfg.claude.permissionMode });
+    try {
+      // After an update, the status line copy follows this version.
+      refreshStatuslineCopy(store.dir);
+    } catch {
+      // Best effort: the old copy keeps working.
+    }
   } else {
     const connector = cfg.transport === 'embedded' ? embeddedConnector(cfg.codexPath) : daemonConnector(cfg.codexPath);
     // Connects lazily: worker conversations only call `report`, which never

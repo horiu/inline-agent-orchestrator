@@ -9,7 +9,7 @@ description: この会話を「監視役」にして、ほかの会話（作業�
 
 - 道具: MCP サーバー `session-manager`（`list_sessions`・`read_session`・`start_session`・`send_message`・`stop_session`・`set_session_name`・`get_usage`・`update_session`・`wait_events`・`read_reports`）。`report` は作業の会話が使うもので、監視役は使わない
 - 記録: 状態のフォルダの `state.json`（道具が書く。管理中の会話・状態・メモ・触る場所）、`reports.jsonl`（作業の会話からの報告）、`config.json`（上限）
-- 利用者が足す決まり: このフォルダの `local-rules.md`（あれば最初に読む）。プロジェクトの決まりは各リポジトリの `AGENTS.md`（Codex）・`CLAUDE.md`（Claude Code）
+- 利用者が足す決まり: 状態のフォルダ（Codex は `~/.codex/session-manager/`、Claude Code は `~/.claude/session-manager-mcp/`）の `local-rules.md`（あれば最初に読む。書き方の例はこの Skill の `local-rules.example.md`）。プロジェクトの決まりは各リポジトリの `AGENTS.md`（Codex）・`CLAUDE.md`（Claude Code）
 
 ## Codex と Claude Code の違い
 
@@ -27,6 +27,7 @@ description: この会話を「監視役」にして、ほかの会話（作業�
 
 1. `local-rules.md` があれば読む
 2. `get_usage` で利用枠・空きメモリ・動いている数を見る。`list_sessions`（scope=managed）で前回から続く会話を見る
+   - Claude Code で `usage.error` に status line を設定するコマンドが出ていたら（初めて使うとき）、利用者に「利用枠を読めるように status line を設定してよいか（`~/.claude/settings.json` の statusLine を変える。今の表示はそのまま出る。元に戻すときは同じコマンドに `--remove`）」を聞く。了承されたらそのコマンドを実行する。断られたら、枠の上限は効かないことを伝えて進める
 3. 利用者の依頼を、会話1本ごとの仕事に分ける（同じファイル・同じ画面を触るものは1本にまとめる）。分け方を一言伝えてから起こす
 
 ## 2. 仕事を渡す（start_session）
@@ -95,7 +96,7 @@ description: この会話を「監視役」にして、ほかの会話（作業�
 - 枠で止めた会話（`paused_usage`）があるあいだ、`wait_events` は idle を返さずに待ち続け、枠が戻ると `usageRecovered` を1回返す。来たら `paused_usage` の会話へ「利用枠が戻りました。止まった所から続きをお願いします」と `send_message`（状態は running に戻る）
 - 止める前に送ってあった連絡は、Codex では止めても消えず、再開の後に読まれる（古くなった連絡があれば、再開の依頼に「前に送った◯◯は取り消し」と書く）。Claude Code では止めたときに捨てられるので、要るものは再開の依頼に書き直す
 - リセットまで長いとき（週の枠など）は、利用者に伝えて見回りをやめてよい。戻ったら利用者が「見回って」と打つ
-- Claude Code で `get_usage` の `usage.error` が status line の設定を求めているときは、利用者に README の「Claude Code の利用枠」を案内する（それまでは枠の上限は効かない）
+- Claude Code で status line を設定していないあいだは、利用枠が読めないので枠の上限は効かない（設定は 1. の 2）
 
 ## 8. 保留
 
@@ -109,6 +110,16 @@ description: この会話を「監視役」にして、ほかの会話（作業�
 - 表: 会話の名前・結果（ブランチ・PR・残り）
 - 判断待ち・利用者が確かめること
 - worktree の片付けを聞く（消すのは利用者の返事のあと）
+
+## status line を元に戻す（Claude Code）
+
+利用者に頼まれたら（この道具をやめるときなど）、次を実行する。設定する前の status line に戻る。
+
+```text
+node "${CLAUDE_PLUGIN_ROOT}/src/setup.mjs" statusline --remove
+```
+
+プラグインで入れていないとき（`${CLAUDE_PLUGIN_ROOT}` がそのまま残っているとき）は、この道具を置いたフォルダの `src/setup.mjs` を使う。
 
 ## やらないこと
 

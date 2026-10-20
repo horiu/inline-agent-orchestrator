@@ -1,0 +1,18 @@
+{
+  "name": "inline-agent-orchestrator",
+  "displayName": "Inline Agent Orchestrator",
+  "version": "0.3.0",
+  "description": "いつもの会話を監視役（orchestrator）にして、ほかの会話を起こし・仕事を渡し・見回り・止め・再開させる",
+  "author": { "name": "horiu" },
+  "homepage": "https://github.com/horiu/inline-agent-orchestrator",
+  "repository": "https://github.com/horiu/inline-agent-orchestrator",
+  "license": "MIT",
+  "keywords": ["orchestrator", "mcp", "sessions", "codex"],
+  "mcpServers": {
+    "session-manager": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/src/server.mjs"],
+      "env": { "CSM_AGENT": "claude" }
+    }
+  }
+}

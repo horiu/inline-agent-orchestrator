@@ -1,6 +1,6 @@
 # 利用者が足す決まり（例）
 
-このファイルを `local-rules.md` という名前で写して、自分の環境に合わせて書き換える。監視役は始めるときに読む。
+このファイルを `local-rules.md` という名前で状態のフォルダ（Codex は `~/.codex/session-manager/`、Claude Code は `~/.claude/session-manager-mcp/`）に写して、自分の環境に合わせて書き換える。監視役は始めるときに読む。
 
 ## モデルとエフォートの目安
 

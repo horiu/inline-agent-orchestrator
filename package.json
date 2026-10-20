@@ -1,6 +1,6 @@
 {
   "name": "inline-agent-orchestrator",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "MCP server and skill that let one Codex or Claude Code conversation start and supervise other conversations (start, message, stop, watch, usage limits, memory guard).",
   "license": "MIT",
   "type": "module",

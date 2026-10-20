@@ -109,6 +109,7 @@ test('start_session runs claude --bg with name, model, effort, permission mode, 
   assert.equal(mcp.mcpServers['session-report'].env.CSM_ROLE, 'worker');
   assert.equal(mcp.mcpServers['session-report'].env.CSM_AGENT, 'claude');
   assert.equal(opt('--disallowedTools'), 'mcp__session-manager');
+  assert.equal(args[args.indexOf('--disallowedTools') + 2], 'mcp__plugin_inline-agent-orchestrator_session-manager', 'the plugin form of the manager server is removed too');
   assert.equal(opt('--allowedTools'), 'mcp__session-report__report');
   // Multi-value options must not sit right before the prompt.
   assert.equal(args[args.length - 3], '--name');
@@ -299,6 +300,7 @@ test('list_sessions all uses agents --json with --all and --cwd', async () => {
 test('usage comes from usage.json written by the status line; stale data is flagged', async () => {
   let u = await tools.get_usage.handler({});
   assert.match(u.usage.error, /status line/);
+  assert.match(u.usage.error, /setup.mjs" statusline/);
   assert.ok(recordUsage({ rate_limits: { five_hour: { used_percentage: 96.4, resets_at: 1_800_000_100 }, seven_day: { used_percentage: 41.2, resets_at: 1_800_500_000 } } }, store.dir, new Date(clock)));
   u = await tools.get_usage.handler({});
   assert.deepEqual(u.usage.windows.map((w) => [w.window, w.usedPercent]), [['5h', 96.4], ['weekly', 41.2]]);

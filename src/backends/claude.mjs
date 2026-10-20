@@ -15,6 +15,7 @@ import { fileURLToPath } from 'node:url';
 import { ToolError, iso, tail } from './common.mjs';
 
 const SERVER_PATH = fileURLToPath(new URL('../server.mjs', import.meta.url));
+const SETUP_PATH = fileURLToPath(new URL('../setup.mjs', import.meta.url)).replaceAll('\\', '/');
 const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 const SHORT_ID = /claude (?:attach|logs|stop) (\S+)/;
 const USAGE_STALE_MS = 30 * 60 * 1000;
@@ -22,6 +23,10 @@ const USAGE_STALE_MS = 30 * 60 * 1000;
 const DELIVER_TO = new Set(['running', 'waiting_user']);
 export const WORKER_SERVER = 'session-report';
 export const MANAGER_SERVER = 'session-manager';
+// Tool names of the manager's server when it comes from the plugin
+// (code.claude.com/docs/en/mcp: mcp__plugin_<plugin>_<server>__<tool>).
+export const PLUGIN_NAME = 'inline-agent-orchestrator';
+export const MANAGER_TOOL_PREFIXES = [`mcp__${MANAGER_SERVER}`, `mcp__plugin_${PLUGIN_NAME}_${MANAGER_SERVER}`];
 
 const WAITING_FLAG = {
   'permission prompt': 'waitingOnApproval',
@@ -145,8 +150,8 @@ export function claudeBackend({ store, claudePath = 'claude', permissionMode = '
 
   // Workers get this server under its own name with only `report` visible
   // (CSM_ROLE=worker) and allowed without a prompt; the manager's
-  // `session-manager` server, if the user registered it for every session, is
-  // removed from the worker with --disallowedTools.
+  // `session-manager` server, which every session loads (plugin or user
+  // scope), is removed from the worker with --disallowedTools.
   function workerMcpConfig() {
     const path = join(store.dir, 'worker-mcp.json');
     const config = {
@@ -170,7 +175,7 @@ export function claudeBackend({ store, claudePath = 'claude', permissionMode = '
     // Rule syntax: `mcp__<server>` matches every tool of that server,
     // `mcp__<server>__<tool>` one tool (code.claude.com/docs/en/permissions).
     const args = ['--mcp-config', workerMcpConfig()];
-    args.push('--disallowedTools', `mcp__${MANAGER_SERVER}`);
+    args.push('--disallowedTools', ...MANAGER_TOOL_PREFIXES);
     args.push('--allowedTools', `mcp__${WORKER_SERVER}__report`);
     if (instructions) args.push('--append-system-prompt', instructions);
     if (model) args.push('--model', model);
@@ -309,7 +314,9 @@ export function claudeBackend({ store, claudePath = 'claude', permissionMode = '
     async usage() {
       const path = join(store.dir, 'usage.json');
       if (!existsSync(path))
-        throw new Error('利用枠がまだ記録されていません。README の「Claude Code で使う」の status line を設定してください');
+        throw new Error(
+          `利用枠がまだ記録されていません。利用者の了承を得てから、次のコマンドで status line を設定してください（~/.claude/settings.json の statusLine を変える。前の表示は残る）: node "${SETUP_PATH}" statusline`,
+        );
       const data = JSON.parse(readFileSync(path, 'utf8'));
       const windows = [];
       for (const [key, label, mins] of [['five_hour', '5h', 300], ['seven_day', 'weekly', 10080]]) {
