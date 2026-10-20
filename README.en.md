@@ -2,9 +2,9 @@
 
 English | [日本語](README.md)
 
-**Turn your everyday Claude Code or Codex session into an orchestrator.**
+**However many tasks you hand off, you only ever talk to one chat.**
 
-Hand a batch of tasks to a single session, and it becomes the orchestrator: it starts a separate session for each task, monitors their progress, and brings back only the decisions that need you, all at once. There is no new app or UI to learn.
+When you run several tasks in parallel with Claude Code or Codex, do you end up opening session after session and checking on each one in turn? Inline Agent Orchestrator turns the chat you already use into the coordinator. It starts a session for each task, keeps an eye on their progress, and comes back to you only with the decisions that need you, all at once. The screens and controls stay the same Claude Code and Codex you know.
 
 > [!NOTE]
 > This is a prototype (v0.5.0). The unit tests pass, but it has not yet been verified against real Claude Code or Codex sessions. Please run through [Verification](#verification) before relying on it.
@@ -13,12 +13,12 @@ Hand a batch of tasks to a single session, and it becomes the orchestrator: it s
 
 ## Features
 
-- **Works in the UI you already use** — Runs on standard Claude Code and Codex sessions and their CLIs. No dedicated app, background service, or tmux required
-- **Starts sessions on its own** — Picks a name, working folder, and model for each task, then launches a worker session and hands it the task
-- **Batches your decisions** — Collects questions from every session and asks them together, with options and a recommendation
-- **Protects your machine and your plan limits** — Watches concurrent sessions, free memory, and the 5-hour and weekly usage limits, and keeps parallel work within safe bounds. Pauses as a limit approaches and resumes once it resets
-- **Recovers stalled work** — Detects sessions that crashed or stopped midway and asks them to continue
-- **Lightweight** — Needs only Node.js, with zero dependencies
+- **The UI you already use** — There is no separate app or screen. You keep using Claude Code and Codex as they are, with no tmux or background service to run
+- **A session for each task** — Splits your request into tasks, picks a name, working folder and model for each, and runs them in separate sessions
+- **Questions batched, with a recommendation** — Gathers every session's "how should I proceed?" and asks them in one go, with options and a recommendation. Once you answer, each task picks up where it left off
+- **Easy on your machine and your plan limits** — Keeps an eye on how many sessions run at once, free memory, and the 5-hour and weekly usage limits. Pauses as a limit approaches and resumes once it resets
+- **Stalled work gets back on track** — Notices sessions that crashed or stopped midway and asks them to carry on from where they stopped
+- **Only Node.js required** — No other packages, so it stays light
 
 ## Example
 
