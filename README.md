@@ -49,18 +49,15 @@ Claude Code や Codex で作業を並行して進めるとき、セッション�
 
 動作環境: Claude Code 2.1.275 以降、Node.js 20 以降
 
-Claude Code のチャット欄に次のコマンドを入力します。
+ターミナルで起動した Claude Code のチャット欄に、次のコマンドを入力します。
 
 ```text
 /plugin install inline-agent-orchestrator --marketplace horiu/inline-agent-orchestrator
 ```
 
-マーケットプレイスの追加を確認されたら承認し、続く画面で「Install for you」を選ぶと、そのまま使えるようになります。初めて使うときに、使用量を読み取るための status line の設定を求められます。許可すると設定され、現在の status line の表示はそのまま残ります。
+マーケットプレイスの追加を確認されたら承認し、続く画面で「Install for you」を選ぶと、そのまま使えるようになります。
 
-<details>
-<summary>ターミナルからインストールする（デスクトップアプリ・VS Code をお使いの場合など）</summary>
-
-ターミナルで次のコマンドを実行し、Claude Code を再起動します（Claude Code 2.1.292 以降）。インストールしたプラグインは、ターミナル・デスクトップアプリ・VS Code のどれからでも使えます。
+デスクトップアプリと VS Code のチャット欄では、このコマンドは使えません。代わりにターミナルで次のコマンドを実行し、アプリを再起動してください（Claude Code 2.1.292 以降）。インストールしたプラグインは、ターミナル・デスクトップアプリ・VS Code のどれからでも使えます。
 
 ```bash
 claude plugin install inline-agent-orchestrator --marketplace horiu/inline-agent-orchestrator
@@ -68,7 +65,7 @@ claude plugin install inline-agent-orchestrator --marketplace horiu/inline-agent
 
 VS Code では、チャット欄に `/plugins` と入力して開く画面からもインストールできます。Marketplaces タブで `horiu/inline-agent-orchestrator` を追加し、Plugins タブでインストールします。
 
-</details>
+初めて使うときに、使用量を読み取るための status line の設定を求められます。許可すると設定され、現在の status line の表示はそのまま残ります。
 
 <details>
 <summary>Claude Code 2.1.257〜2.1.274 をお使いの場合</summary>

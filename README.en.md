@@ -51,18 +51,15 @@ When you run several tasks in parallel with Claude Code or Codex, do you end up 
 
 Requirements: Claude Code 2.1.275 or later, Node.js 20 or later
 
-Type this command into the Claude Code chat box:
+Type this command into the chat box of Claude Code running in a terminal:
 
 ```text
 /plugin install inline-agent-orchestrator --marketplace horiu/inline-agent-orchestrator
 ```
 
-When asked to confirm adding the marketplace, approve it, then choose "Install for you" on the next screen. The plugin is ready to use right away. The first time you use it, the orchestrator asks for permission to set up a status line so it can read your usage. Once you allow it, the status line is configured, and your current status line keeps showing as before.
+When asked to confirm adding the marketplace, approve it, then choose "Install for you" on the next screen. The plugin is ready to use right away.
 
-<details>
-<summary>Installing from a terminal (for example, if you use the desktop app or VS Code)</summary>
-
-Run this command in a terminal, then restart Claude Code (requires Claude Code 2.1.292 or later). The installed plugin works in the terminal, the desktop app and VS Code alike.
+This command does not work in the chat box of the desktop app or VS Code. Instead, run this command in a terminal and restart the app (requires Claude Code 2.1.292 or later). The installed plugin works in the terminal, the desktop app and VS Code alike.
 
 ```bash
 claude plugin install inline-agent-orchestrator --marketplace horiu/inline-agent-orchestrator
@@ -70,7 +67,7 @@ claude plugin install inline-agent-orchestrator --marketplace horiu/inline-agent
 
 In VS Code, you can also install it from the screen that opens when you type `/plugins` in the chat box: add `horiu/inline-agent-orchestrator` on the Marketplaces tab, then install it from the Plugins tab.
 
-</details>
+The first time you use it, the orchestrator asks for permission to set up a status line so it can read your usage. Once you allow it, the status line is configured, and your current status line keeps showing as before.
 
 <details>
 <summary>Using Claude Code 2.1.257–2.1.274</summary>
