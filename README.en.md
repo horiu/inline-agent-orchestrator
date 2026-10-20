@@ -47,18 +47,27 @@ Hand a batch of tasks to a single session, and it becomes the orchestrator: it s
 
 ## Quick start
 
+> [!TIP]
+> On this page, commands that start with `claude`, `git` or `node` are run in a **terminal** (PowerShell on Windows, Terminal on macOS and Linux). Commands that start with `/` or `$` are typed into the **chat box** of Claude Code or Codex.
+
 ### Claude Code
 
 Requirements: Claude Code 2.1.292 or later, Node.js 20 or later
+
+Run this command in a terminal:
 
 ```bash
 claude plugin install inline-agent-orchestrator --marketplace horiu/inline-agent-orchestrator
 ```
 
-Restart Claude Code and you're ready. The first time you use it, the orchestrator asks for permission to set up a status line so it can read your usage. Once you allow it, the status line is configured, and your current status line keeps showing as before.
+You can also install it from the Claude Code chat box (2.1.275 or later): type `/plugin install inline-agent-orchestrator --marketplace horiu/inline-agent-orchestrator`, then choose "Install for you" on the screen that opens.
+
+Restart Claude Code (or type `/reload-plugins` in the chat box) and you're ready. The first time you use it, the orchestrator asks for permission to set up a status line so it can read your usage. Once you allow it, the status line is configured, and your current status line keeps showing as before.
 
 <details>
 <summary>Using Claude Code 2.1.257–2.1.291</summary>
+
+Run these two commands in a terminal, in order:
 
 ```bash
 claude plugin marketplace add horiu/inline-agent-orchestrator
@@ -71,6 +80,8 @@ claude plugin install inline-agent-orchestrator@inline-agent-orchestrator
 
 Requirements: Codex CLI 0.162 or later (required even if you only use the desktop app), Node.js 20 or later, git
 
+Run these two commands in a terminal, in order:
+
 ```bash
 git clone https://github.com/horiu/inline-agent-orchestrator.git $HOME/tools/inline-agent-orchestrator
 node $HOME/tools/inline-agent-orchestrator/src/setup.mjs codex
@@ -82,7 +93,7 @@ Restart Codex and you're ready. The setup script registers the MCP server in `~/
 
 ### Getting started
 
-In a new session, enter the command below, then describe the tasks you want done.
+In a new session, type the command below into the chat box, then describe the tasks you want done.
 
 | | Command |
 | --- | --- |
@@ -185,8 +196,8 @@ When nothing happens, the orchestrator checks in every `watchIntervalMin` minute
 
 | | Update | Uninstall |
 | --- | --- | --- |
-| Claude Code | Run `claude plugin update inline-agent-orchestrator@inline-agent-orchestrator`, then restart | Ask the orchestrator to "restore the status line", then run `claude plugin uninstall inline-agent-orchestrator@inline-agent-orchestrator` |
-| Codex | In the install folder, run `git pull` and `node src/setup.mjs codex`, then restart | Remove `[mcp_servers.session-manager]` from `~/.codex/config.toml` and delete `~/.agents/skills/manage-sessions/` |
+| Claude Code | In a terminal, run `claude plugin update inline-agent-orchestrator@inline-agent-orchestrator`, then restart Claude Code (or type `/reload-plugins` in the chat box). From the chat box, you can also open this plugin on the Installed tab of `/plugin` and choose "Update now" | In the chat box, ask the orchestrator to "restore the status line", then run `claude plugin uninstall inline-agent-orchestrator@inline-agent-orchestrator` in a terminal |
+| Codex | In a terminal, go to the install folder, run `git pull` and `node src/setup.mjs codex`, then restart Codex | Remove `[mcp_servers.session-manager]` from `~/.codex/config.toml` and delete `~/.agents/skills/manage-sessions/` |
 
 ## How it works
 
@@ -257,7 +268,7 @@ Because it has not yet been verified against real Claude Code or Codex, please s
 
 | # | Check | Steps | If it fails |
 | --- | --- | --- | --- |
-| C1 | Installation | Does it appear in `claude plugin list`? In a session, open `/mcp` — is the plugin's `session-manager` connected? | Check that `node --version` is 20 or later |
+| C1 | Installation | Does it appear when you run `claude plugin list` in a terminal? In the chat box, open `/mcp` — is the plugin's `session-manager` connected? | Check that `node --version` is 20 or later |
 | C2 | Tools and usage | Run `/inline-agent-orchestrator:manage-sessions` → allow the status line setup → wait a moment, then ask "call `get_usage`" → are usage (5h, weekly) and free memory shown? | Check `statusLine` in `~/.claude/settings.json` and `~/.claude/session-manager-mcp/usage.json` |
 | C3 | Starting a session | Start `claude` once in a test folder and trust it. Then ask: "`start_session` with the name 'trial', that folder as the working folder, and the request 'count the files and send the result with report'" → does 'trial' appear in `claude agents`? | Read the error message returned by the tool |
 | C4 | Receiving reports | Does `wait_events` receive the `report` (done)? With `claude attach <ID>` → `/mcp`, does the worker session show `session-report` while the orchestrator's tools are unavailable? | Check `~/.claude/session-manager-mcp/worker-mcp.json` |
@@ -291,7 +302,7 @@ Cleanup: `codex archive <ID>`, `update_session` (remove), and `codex app-server 
 | `claude agents --json returned something that is not JSON` (Claude Code) | Update the CLI. Check agent view's status with `claude daemon status` |
 | `daemon start failed` (Codex) | On Windows, it cannot be started from an administrator PowerShell. It also fails if the `CODEX_HOME` path is too long |
 | `thread/queue/add を使えません` (Codex) | Update Codex |
-| Monitoring times out (Codex) | Run `node src/setup.mjs codex` again (it fixes `tool_timeout_sec`) |
+| Monitoring times out (Codex) | In a terminal, run `node src/setup.mjs codex` again from the install folder (it fixes `tool_timeout_sec`) |
 
 ### Reporting issues
 
@@ -322,6 +333,8 @@ npm test
 
 <details>
 <summary>Installing into Claude Code without the plugin</summary>
+
+Run these commands in a terminal, in order:
 
 ```bash
 git clone https://github.com/horiu/inline-agent-orchestrator.git $HOME/tools/inline-agent-orchestrator
