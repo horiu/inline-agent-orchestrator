@@ -363,6 +363,21 @@ test('an untrusted folder is explained instead of the raw CLI error', async () =
     return true;
   });
   assert.deepEqual(store.state().targets, {}, 'nothing recorded');
+  // Resuming in a folder that is not trusted is explained the same way.
+  await tools.start_session.handler({ name: 'b', cwd: '/r', prompt: 'p' });
+  fake.set(SID, { state: 'done', status: 'idle' });
+  clock += 10_000;
+  fake.failResume = 'Workspace not trusted. Run `claude` in /r once and accept the trust prompt, then retry.';
+  await assert.rejects(tools.send_message.handler({ threadId: SID, message: '続き' }), /\/r が Claude Code に信頼されていない/);
+});
+
+test('threads paused for usage are released when pauseAtPct is off, even if usage cannot be read', async () => {
+  await tools.start_session.handler({ name: 'a', cwd: '/r', prompt: 'p' });
+  store.updateTarget(SID, { status: 'paused_usage' });
+  fake.set(SID, { state: 'stopped', status: undefined });
+  clock += 10_000;
+  const r = await tools.wait_events.handler({});
+  assert.deepEqual(r.events.filter((e) => e.type === 'usageRecovered').map((e) => e.threadIds), [[SID]]);
 });
 
 test('status line: nothing recorded without rate_limits; short text', () => {

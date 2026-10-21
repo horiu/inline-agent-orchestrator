@@ -213,6 +213,8 @@ Codex を再起動すれば準備完了です。セットアップスクリプ�
 
 残りの枠を別の作業に使いたいなど、上限の手前で止めたい場合は、`config.json` の `pauseAtPct` に割合を書くか、オーケストレーターに「90% で止めて」のように伝えてください。Claude Code で使用量を読むには status line の設定が必要で、デスクトップアプリでは使えません。
 
+以前の `config.example.json` を写した `config.json` には `"pauseAtPct": 95` が残っており、Claude Code でも 95% で止めます。止めない場合は、その行を消すか `{ "claude": null }` に書き換えてください。
+
 ## 更新とアンインストール
 
 ### Claude Code

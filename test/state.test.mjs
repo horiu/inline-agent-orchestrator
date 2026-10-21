@@ -17,6 +17,8 @@ test('pauseAtPct is off for Claude Code and 95 for Codex unless config.json says
   assert.deepEqual([at('claude'), at('codex')], [80, 80]);
   writeFileSync(s.configPath, JSON.stringify({ pauseAtPct: null }));
   assert.deepEqual([at('claude'), at('codex')], [null, null]);
+  writeFileSync(s.configPath, JSON.stringify({ pauseAtPct: { claude: '90', codex: 'x' } }));
+  assert.deepEqual([at('claude'), at('codex')], [90, null]);
 });
 
 test('Store anchors a relative directory and all file paths to the manager cwd', () => {

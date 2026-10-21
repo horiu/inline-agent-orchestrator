@@ -215,6 +215,8 @@ Stopping a running session part-way is not a pause. The running turn is cut off,
 
 To stop short of the limit anyway — for example, to keep the rest of your usage for other work — set `pauseAtPct` in `config.json`, or tell the orchestrator something like "stop at 90%". Reading Claude Code usage needs the status line, which does not work in the desktop app.
 
+A `config.json` copied from an older `config.example.json` still has `"pauseAtPct": 95`, which stops Claude Code sessions at 95% too. To stop never, remove that line or change it to `{ "claude": null }`.
+
 ## Updating and uninstalling
 
 ### Claude Code

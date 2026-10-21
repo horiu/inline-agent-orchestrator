@@ -76,7 +76,7 @@ description: Make this session an orchestrator that starts, monitors and steers 
 | `report` question | `update_session`（status `waiting_user`）。5. でまとめて聞く |
 | `report` done | `update_session`（status `done`、note に結果: ブランチ・PR・残り）。利用者へ一言 |
 | `report` blocked | `read_session` で読み、直せる理由なら `send_message` で手を貸す。利用者の判断が要るなら 5. |
-| `status` が idle / notLoaded になった（done の報告が無い） | `read_session` で最後のやりとりを読む。`usageLimit` があれば（Codex はターンの error が利用制限なら）7.、質問で終わっていれば 5.、エラー・途中切れなら 6. |
+| `status` が idle / notLoaded になった（done の報告が無い） | `read_session` で最後のやりとりを読む。`usageLimit` があり、最後のやりとりが途中で切れていれば（Codex はターンの error が利用制限なら）7.（`usageLimit` はログの文面からの推定。作業の中身で利用制限の話をしているだけのこともある）、質問で終わっていれば 5.、エラー・途中切れなら 6. |
 | `status` systemError／`turnCompleted` failed | `read_session` で読み、利用制限なら 7.、ほかは 6. |
 | `activeFlags` に waitingOnUsageLimit（Claude Code） | 利用枠のリセットを待っていて、戻れば自分で続く。何もしない |
 | `activeFlags` に waitingOnApproval・waitingOnUserInput／`needsAttention` | 利用者に開き方（Codex は `codex resume <ID>`、Claude Code は `claude attach <短いID>`）を伝えて答えてもらう（監視役は代わりに承認しない） |

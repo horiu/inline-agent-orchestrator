@@ -83,8 +83,10 @@ export const TARGET_STATUSES = ['running', 'waiting_user', 'done', 'pending', 'p
 // agent, or { claude, codex }.
 export function pauseAtPctFor(cfg, agent) {
   const v = cfg.pauseAtPct;
-  const pct = v && typeof v === 'object' ? v[agent] : v;
-  return typeof pct === 'number' ? pct : null;
+  const raw = v && typeof v === 'object' ? v[agent] : v;
+  // "90" written by hand still counts; anything else is off.
+  const pct = typeof raw === 'string' && raw.trim() !== '' ? Number(raw) : raw;
+  return typeof pct === 'number' && Number.isFinite(pct) ? pct : null;
 }
 
 // Which agent this server manages: CSM_AGENT=claude|codex (default codex).
@@ -149,12 +151,9 @@ export class Store {
       defaults: { ...DEFAULT_CONFIG.defaults, ...(user.defaults ?? {}) },
       claude: { ...DEFAULT_CONFIG.claude, ...(user.claude ?? {}) },
       // { claude: 90 } keeps the built-in value for the other agent.
-      pauseAtPct:
-        user.pauseAtPct && typeof user.pauseAtPct === 'object'
-          ? { ...DEFAULT_CONFIG.pauseAtPct, ...user.pauseAtPct }
-          : Object.hasOwn(user, 'pauseAtPct')
-            ? user.pauseAtPct
-            : DEFAULT_CONFIG.pauseAtPct,
+      ...(user.pauseAtPct && typeof user.pauseAtPct === 'object'
+        ? { pauseAtPct: { ...DEFAULT_CONFIG.pauseAtPct, ...user.pauseAtPct } }
+        : {}),
       // A profile the user writes replaces the built-in one of the same name;
       // `null` removes it.
       profiles: Object.fromEntries(

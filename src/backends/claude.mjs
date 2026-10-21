@@ -106,6 +106,8 @@ export function claudeBackend({ store, claudePath = 'claude', permissionMode = '
     const res = await run(claudePath, args, opts);
     if (res.code !== 0) {
       const detail = (res.stderr || res.stdout).trim().slice(0, 500);
+      // Starting or resuming a session in a folder nobody has trusted yet.
+      if (opts?.cwd && /not trusted/i.test(detail)) throw new ToolError(untrustedMessage(opts.cwd));
       const label = args[0].startsWith('--') ? args[0] : args.slice(0, 2).join(' ');
       throw new Error(`claude ${label} failed (exit ${res.code})${detail ? `: ${detail}` : ''}`);
     }
@@ -289,13 +291,7 @@ export function claudeBackend({ store, claudePath = 'claude', permissionMode = '
     async start({ name, cwd, model, effort, permissionMode: mode, instructions, firstMessage }, { onCreated }) {
       const options = { instructions, model, effort, permissionMode: mode ?? permissionMode };
       const args = ['--bg', ...workerOptions(options), '--name', name, firstMessage(null)];
-      let out;
-      try {
-        out = await cli(args, { cwd });
-      } catch (err) {
-        if (/not trusted/i.test(err.message)) throw new ToolError(untrustedMessage(cwd));
-        throw err;
-      }
+      const out = await cli(args, { cwd });
       const jobId = SHORT_ID.exec(out)?.[1] ?? null;
       let sessionId = UUID.exec(out)?.[0] ?? null;
       // Look the new session up to learn both ids.

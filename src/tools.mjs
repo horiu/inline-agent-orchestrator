@@ -109,7 +109,7 @@ export function createTools({ backend, client, store, sys = {} }) {
       // manager is not asked to set anything up to read it.
       usage =
         pauseAt === null
-          ? { unavailable: true, note: '利用枠は読めないが、利用枠では止めない設定（pauseAtPct なし）なので、このままでよい' }
+          ? { unavailable: true, detail: err.message, note: '利用枠では止めない設定（pauseAtPct なし）なので、読めなくてもこのままでよい（設定を求めない）' }
           : { error: err.message };
     }
     return {
@@ -508,16 +508,25 @@ export function createTools({ backend, client, store, sys = {} }) {
             alerts.memoryLow = low;
             if (!usageChecked) {
               usageChecked = true;
+              let u = null;
               try {
-                const u = await be.usage();
-                const over = pauseAt === null ? [] : u.windows.filter((w) => w.usedPercent >= pauseAt);
+                u = await be.usage();
+              } catch {
+                // usage is advisory here; get_usage reports the error
+              }
+              // Without pauseAtPct nothing waits on the usage, so threads
+              // still paused for it (from an earlier setting) are released
+              // even when it cannot be read.
+              if (u || pauseAt === null) {
+                const over = pauseAt === null || !u ? [] : u.windows.filter((w) => w.usedPercent >= pauseAt);
                 const keys = over.map((w) => `${w.limitId}/${w.window}/${w.resetsAt}`);
                 const fresh = over.filter((_, i) => !alerts.usageHigh.includes(keys[i]));
                 if (fresh.length) events.push({ type: 'usageHigh', windows: fresh, pauseAtPct: pauseAt });
                 alerts.usageHigh = keys;
                 // Once per set of paused threads, not on every call.
                 const recoveredKey = paused.slice().sort().join(',');
-                if (paused.length && !over.length && u.ordinaryUsageAllowed !== false && !u.stale) {
+                const usable = pauseAt === null || (u.ordinaryUsageAllowed !== false && !u.stale);
+                if (paused.length && !over.length && usable) {
                   if (alerts.usageRecovered !== recoveredKey)
                     events.push({
                       type: 'usageRecovered',
@@ -528,8 +537,6 @@ export function createTools({ backend, client, store, sys = {} }) {
                 } else {
                   alerts.usageRecovered = null;
                 }
-              } catch {
-                // usage is advisory here; get_usage reports the error
               }
             }
             if (events.length || now() >= deadline) break;
