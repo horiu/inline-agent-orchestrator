@@ -12,7 +12,7 @@ import { refreshStatuslineCopy } from './setup.mjs';
 import { createTools, ToolError } from './tools.mjs';
 import { versionInfo } from './version.mjs';
 
-export const SERVER_INFO = { name: 'inline-agent-orchestrator', version: '0.8.0' };
+export const SERVER_INFO = { name: 'inline-agent-orchestrator', version: '0.9.0' };
 
 // Worker conversations (CSM_ROLE=worker) see only `report`.
 export function toolsForRole(tools, role) {
@@ -133,7 +133,11 @@ export function main() {
     client = new AppServerClient({ connector });
     backend = codexBackend({ client, store });
   }
-  const { tools } = createTools({ backend, store, sys: { version: () => versionInfo({ agent, running: SERVER_INFO.version, dir: store.dir }) } });
+  const { tools } = createTools({
+    backend,
+    store,
+    sys: { running: SERVER_INFO.version, version: () => versionInfo({ agent, running: SERVER_INFO.version, dir: store.dir }) },
+  });
   const server = createMcpServer({ tools: toolsForRole(tools, process.env.CSM_ROLE), write: (s) => process.stdout.write(s) });
   const rl = createInterface({ input: process.stdin });
   rl.on('line', (line) => server.receive(line));

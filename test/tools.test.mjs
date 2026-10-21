@@ -602,24 +602,56 @@ test('work waiting for memory or CPU keeps the watch going and is reported once 
   const t = createTools({ client, store, sys: { freemem: () => 8 * GB, now: () => clock, sleep: async (ms) => (clock += ms), cpus } }).tools;
   store.updateTarget('wait:後で', { name: '後で', status: 'pending' });
   assert.equal((await t.wait_events.handler({})).idle, true, 'work put off by the user does not keep the watch going');
-  await t.update_session.handler({ threadId: 'wait:次', name: '次', status: 'pending', waitForRoom: true, note: '依頼の要点' });
+  // Refused for the busy CPU: kept as a TODO that waits for room.
+  const refused = await t.start_session.handler({ name: '次', cwd: '/r', prompt: '依頼の要点', profile: 'implement' });
+  assert.equal(refused.started, false);
+  const todo = store.state().todos.find((td) => td.id === refused.todo);
+  assert.deepEqual([todo.when, todo.auto, todo.status, todo.start.name, todo.start.prompt, todo.start.profile], [{ type: 'room' }, true, 'open', '次', '依頼の要点', 'implement']);
   const busyRound = await t.wait_events.handler({});
   assert.equal(busyRound.idle, false);
   assert.equal(busyRound.timedOut, true);
   busy = 20;
   const r = await t.wait_events.handler({});
-  assert.deepEqual(r.events.map((e) => [e.type, e.names, e.cpuPct]), [['roomAvailable', ['次'], 20]]);
+  assert.deepEqual(r.events.map((e) => [e.type, e.todos, e.names, e.cpuPct]), [['roomAvailable', [refused.todo], ['次'], 20]]);
   assert.equal((await t.wait_events.handler({})).timedOut, true, 'reported once');
-  // The same ID put back later is new work and is reported again.
-  await t.update_session.handler({ threadId: 'wait:次', remove: true });
+  // Refused again when starting it: the same TODO waits anew and is reported again.
+  busy = 95;
   clock += 1000;
-  await t.update_session.handler({ threadId: 'wait:次', name: '次', status: 'pending', waitForRoom: true });
+  const again = await t.start_session.handler({ name: '次', cwd: '/r', prompt: '依頼の要点', todo: refused.todo });
+  assert.equal(again.todo, refused.todo);
+  assert.equal(store.state().todos.length, 1);
+  busy = 20;
   assert.equal((await t.wait_events.handler({})).events[0]?.type, 'roomAvailable');
+  // Started: linked to the session, and done with it.
+  const started = await t.start_session.handler({ name: '次', cwd: '/r', prompt: '依頼の要点', todo: refused.todo });
+  assert.equal(started.started, true);
+  assert.deepEqual([store.state().todos[0].status, store.state().todos[0].threadId], ['started', started.threadId]);
+  assert.equal((await t.wait_events.handler({})).events.some((e) => e.type === 'roomAvailable'), false);
+  const done = await t.update_session.handler({ threadId: started.threadId, status: 'done' });
+  assert.deepEqual(done.todosDone, [refused.todo]);
+  assert.equal(store.state().todos[0].status, 'done');
+});
+
+test('records of older versions waiting for room or proposed as a card move into TODOs', async () => {
+  store.updateTarget('wait:次', { name: '次', status: 'pending', waitForRoom: true, waitSince: '2026-10-01T00:00:00.000Z', via: 'bg', cwd: '/r', note: '依頼の要点' });
+  store.updateTarget('card:カード', { name: 'カード', status: 'pending', cwd: '/r', note: 'デスクトップアプリのカードで提案' });
+  store.updateTarget('p', { name: '保留', status: 'pending', note: '後で' });
+  const r = await tools.list_sessions.handler({});
+  assert.deepEqual(r.sessions.map((x) => x.name), ['保留']);
+  assert.deepEqual(
+    r.todos.map((td) => [td.id, td.text, td.when.type, td.start.name, td.start.via ?? null, Boolean(td.cardAt)]),
+    [
+      [1, '「次」を起こす（依頼の要点）', 'room', '次', 'bg', false],
+      [2, '「カード」を起こす（デスクトップアプリのカードで提案）', 'anytime', 'カード', null, true],
+    ],
+  );
+  assert.deepEqual(Object.keys(store.state().targets), ['p']);
+  assert.equal(store.state().nextTodoId, 3);
 });
 
 test('work waiting for the usage limit is reported only once usage is back under pauseAtPct', async () => {
-  store.updateTarget('wait:枠', { name: '枠', status: 'pending', waitForRoom: true, waitSince: 'x' });
   fake.rateLimits.rateLimits.primary.usedPercent = 96;
+  assert.equal((await tools.start_session.handler({ name: '枠', cwd: '/r', prompt: 'p' })).started, false);
   const blocked = await tools.wait_events.handler({});
   assert.equal(blocked.idle, false);
   assert.deepEqual(blocked.events.map((e) => e.type), ['usageHigh']);
@@ -952,4 +984,148 @@ test('a usage-paused session whose recovery was reported no longer holds off the
   assert.deepEqual((await tools.wait_events.handler({})).events.map((e) => e.type), ['usageRecovered']);
   const r = await tools.wait_events.handler({});
   assert.equal(r.stuck, true);
+});
+
+// Tools with what the TODO conditions read: the version of this tool, when
+// this server started, and gh (prs: PR number -> state).
+function todoTools({ running = '0.9.0', startedAt = 0, prs = {}, ghCalls = [] } = {}) {
+  return createTools({
+    client: new AppServerClient({ connector: fake.connector() }),
+    store,
+    sys: {
+      freemem: () => freeGb * GB,
+      totalmem: () => 16 * GB,
+      now: () => clock,
+      sleep: async (ms) => (clock += ms),
+      cpus: idleCpus,
+      running,
+      startedAt,
+      gh: async (args, opts) => {
+        ghCalls.push({ args, cwd: opts?.cwd });
+        const state = prs[args[2]];
+        return state ? { code: 0, stdout: JSON.stringify({ state }), stderr: '' } : { code: 1, stdout: '', stderr: 'no pull requests found' };
+      },
+    },
+  }).tools;
+}
+
+test('todo: add, update, done and remove; numbers are not used again', async () => {
+  const t = todoTools();
+  const a = await t.todo.handler({ action: 'add', text: 'README を直す' });
+  assert.deepEqual([a.todo.id, a.todo.when, a.todo.by, a.todo.auto, a.todo.status, a.todo.whenText, a.due], [1, { type: 'anytime' }, 'user', false, 'open', 'いつでも', true]);
+  const b = await t.todo.handler({ action: 'add', text: 'PR #7 の続き', when: { type: 'pr', pr: 7 }, cwd: '/repo', by: 'manager' });
+  assert.equal(b.todo.id, 2);
+  assert.equal(b.todo.whenText, 'PR #7 がマージされたら');
+  await t.todo.handler({ action: 'remove', id: 2 });
+  assert.equal((await t.todo.handler({ action: 'add', text: '次' })).todo.id, 3);
+  const u = await t.todo.handler({ action: 'update', id: 1, text: 'README（英語も）を直す', when: { type: 'at', at: '2026-10-23T09:00:00+09:00' } });
+  assert.equal(u.todo.text, 'README（英語も）を直す');
+  assert.equal(u.todo.when.type, 'at');
+  await t.todo.handler({ action: 'done', id: 1, note: '済んだ' });
+  assert.deepEqual([store.state().todos[0].status, store.state().todos[0].note], ['done', '済んだ']);
+  await assert.rejects(t.todo.handler({ action: 'done', id: 9 }), /TODO 9 はありません/);
+  await assert.rejects(t.todo.handler({ action: 'add', text: 'x', when: { type: 'pr' } }), /pr（PR の番号）/);
+  await assert.rejects(t.todo.handler({ action: 'add', text: 'x', when: { type: 'at', at: 'あした' } }), /at（日時）/);
+  await assert.rejects(t.todo.handler({ action: 'add', when: { type: 'anytime' } }), /text/);
+});
+
+test('wait_events reports a TODO whose condition is met once, and "anytime" never', async () => {
+  const ghCalls = [];
+  const prs = { 7: 'OPEN' };
+  const t = todoTools({ running: '0.9.0', startedAt: 0, prs, ghCalls });
+  await t.todo.handler({ action: 'add', text: 'いつでも' });
+  await t.todo.handler({ action: 'add', text: '朝に', when: { type: 'at', at: new Date(60_000).toISOString() } });
+  await t.todo.handler({ action: 'add', text: 'マージ後', when: { type: 'pr', pr: 7 }, cwd: '/repo' });
+  await t.todo.handler({ action: 'add', text: '新しい版で', when: { type: 'version', version: '0.10.0' } });
+  assert.equal((await t.wait_events.handler({})).idle, true, 'nothing is due yet, and TODOs do not keep the watch going');
+  assert.deepEqual(ghCalls.at(-1), { args: ['pr', 'view', '7', '--json', 'state'], cwd: '/repo' });
+  clock = 60_000;
+  prs[7] = 'MERGED';
+  const r = await t.wait_events.handler({});
+  assert.deepEqual(r.events.map((e) => [e.type, e.todos.map((x) => [x.id, x.text, x.when])]), [
+    ['todoDue', [[2, '朝に', `${new Date(60_000).toISOString()} になったら`], [3, 'マージ後', 'PR #7 がマージされたら']]],
+  ]);
+  assert.ok(store.state().todos[1].dueNotifiedAt);
+  assert.equal((await t.wait_events.handler({})).idle, true, 'reported once');
+  // A new condition is asked about again.
+  await t.todo.handler({ action: 'update', id: 2, when: { type: 'at', at: new Date(0).toISOString() } });
+  assert.deepEqual((await t.wait_events.handler({})).events.map((e) => e.todos.map((x) => x.id)), [[2]]);
+});
+
+test('TODOs waiting for a new version or a restart', async () => {
+  clock = 1000;
+  const before = todoTools({ running: '0.9.0', startedAt: 0 });
+  await before.todo.handler({ action: 'add', text: '版が変わったら確かめる', when: { type: 'version' } });
+  await before.todo.handler({ action: 'add', text: '再起動したら確かめる', when: { type: 'restart' } });
+  assert.deepEqual((await before.list_sessions.handler({})).todos.map((td) => td.due), [false, false]);
+  const after = todoTools({ running: '0.9.1', startedAt: 2000 });
+  assert.deepEqual((await after.list_sessions.handler({})).todos.map((td) => [td.due, td.whenText]), [
+    [true, '新しい版が入ったら'],
+    [true, '起動し直したら'],
+  ]);
+});
+
+test('a TODO waiting for the usage limit is due when the reset time passes or the usage is back', async () => {
+  const t = todoTools();
+  fake.rateLimits.rateLimits.primary.usedPercent = 100;
+  await t.todo.handler({ action: 'add', text: '続き', when: { type: 'usage' }, auto: true });
+  await t.todo.handler({ action: 'add', text: '戻ったら', when: { type: 'usage', at: new Date(5000).toISOString() } });
+  const before = (await t.list_sessions.handler({})).todos;
+  assert.deepEqual(before.map((td) => td.due), [false, false]);
+  assert.match(before[0].dueDetail, /使い切っている枠: 5h/);
+  clock = 5000;
+  assert.deepEqual((await t.list_sessions.handler({})).todos.map((td) => td.due), [false, true]);
+  fake.rateLimits.rateLimits.primary.usedPercent = 10;
+  assert.deepEqual((await t.list_sessions.handler({})).todos.map((td) => td.due), [true, true]);
+  const r = await t.wait_events.handler({});
+  assert.deepEqual(r.events[0].todos.map((x) => [x.id, x.auto]), [[1, true], [2, false]]);
+});
+
+test('list_sessions: TODOs with whether they are due, done ones only with includeArchived, and the handoff gist', async () => {
+  const t = todoTools();
+  await t.todo.handler({ action: 'add', text: 'A' });
+  await t.todo.handler({ action: 'add', text: 'B' });
+  await t.todo.handler({ action: 'done', id: 2 });
+  let r = await t.list_sessions.handler({});
+  assert.deepEqual(r.todos.map((td) => td.text), ['A']);
+  assert.equal(r.handoff.exists, false);
+  writeFileSync(join(store.dir, 'handoff.md'), '# 引き継ぎ\n- 次: PR #8 のレビュー\n');
+  r = await t.list_sessions.handler({ includeArchived: true });
+  assert.deepEqual(r.todos.map((td) => [td.text, td.status, td.due]), [['A', 'open', true], ['B', 'done', null]]);
+  assert.match(r.handoff.text, /PR #8 のレビュー/);
+});
+
+test('a TODO to continue a session starts with a message to it and is done with the session', async () => {
+  fake.addThread('a', { status: { type: 'idle' } });
+  store.updateTarget('a', { name: 'A', status: 'pending' });
+  const t = todoTools();
+  await t.todo.handler({ action: 'add', text: '「A」の続き', threadId: 'a' });
+  assert.equal(store.state().todos[0].status, 'open');
+  await t.send_message.handler({ threadId: 'a', message: '続きをお願いします' });
+  assert.equal(store.state().todos[0].status, 'started');
+  await t.update_session.handler({ threadId: 'a', status: 'done' });
+  assert.equal(store.state().todos[0].status, 'done');
+  await assert.rejects(t.update_session.handler({ threadId: 'a', todo: 5 }), /TODO 5 はありません/);
+});
+
+test('wait_events with wait false returns at once with what is known, never as a timeout or stuck', async () => {
+  setup({ stopWhenStuckMin: 1 / 60 });
+  fake.addThread('a', { status: { type: 'active', activeFlags: [] } });
+  fake.addThread('q', { status: { type: 'idle' } });
+  store.updateTarget('a', { name: 'A', status: 'running', lastSeen: { status: 'active', activeFlags: [] } });
+  store.updateTarget('q', { name: 'Q', status: 'waiting_user', lastSeen: { status: 'idle', activeFlags: [] } });
+  let opened = 0;
+  const t = createTools({
+    client: new AppServerClient({ connector: fake.connector() }),
+    store,
+    sys: { freemem: () => 8 * GB, now: () => clock, sleep: async (ms) => (clock += ms), cpus: idleCpus, watchReports: () => (opened++, () => {}) },
+  }).tools;
+  const quiet = await t.wait_events.handler({ wait: false });
+  assert.deepEqual([quiet.idle, quiet.timedOut, quiet.stuck, quiet.events, clock, opened], [false, false, undefined, [], 0, 0]);
+  await t.report.handler({ kind: 'progress', text: '半分', from: 'A', threadId: 'a' });
+  fake.threads.get('a').status = { type: 'idle' };
+  const r = await t.wait_events.handler({ wait: false });
+  assert.deepEqual(r.events.map((e) => e.type).sort(), ['report', 'status']);
+  assert.equal(clock, 0);
+  assert.equal(store.state().stuckSince, null);
 });

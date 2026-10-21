@@ -796,3 +796,22 @@ test('a bound app session that goes on under a new session ID is followed by its
   assert.equal((await backend.status(APP_ID, store.state().targets[APP_ID])).status, 'idle');
   assert.equal(store.state().targets[APP_ID].sessionId, NEW);
 });
+
+test('in the desktop app, a session started from a TODO is linked through the record and done with it', async () => {
+  setup({}, DESKTOP);
+  await tools.todo.handler({ action: 'add', text: '利用枠が戻ったら PR #7 の続き', when: { type: 'usage' } });
+  const r = await startInApp('続き', { todo: 1 });
+  assert.equal(r.record.todo, 1);
+  assert.deepEqual([store.state().todos[0].status, store.state().todos[0].threadId, store.state().targets[APP_ID].todo], ['started', APP_ID, 1]);
+  await tools.update_session.handler({ threadId: APP_ID, status: 'done' });
+  assert.equal(store.state().todos[0].status, 'done');
+});
+
+test('in the desktop app, a TODO waiting for the usage limit is not judged from a leftover usage.json', async () => {
+  setup({}, DESKTOP);
+  writeFileSync(join(store.dir, 'usage.json'), JSON.stringify({ updatedAt: new Date(clock - 60 * 60_000).toISOString(), rate_limits: { five_hour: { used_percentage: 10, resets_at: clock / 1000 + 3600 } } }));
+  await tools.todo.handler({ action: 'add', text: '続き', when: { type: 'usage' } });
+  const [td] = (await tools.list_sessions.handler({})).todos;
+  assert.equal(td.due, null);
+  assert.match(td.dueDetail, /mcp__ccd_session_mgmt__get_usage/);
+});
