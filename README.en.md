@@ -114,7 +114,7 @@ In a new session, type the command below into the chat box, then describe the ta
 
 The orchestrator splits the work, starts worker sessions, and begins monitoring. Saying how far each task should go — "up to opening a PR", "investigate and report" — keeps the work moving without stopping midway.
 
-The orchestrator session is named `Manager`. In the Claude Code desktop app this happens automatically. Claude Code in the terminal does not let a tool rename a session, so when prompted, type `/rename Manager` into the chat box.
+The orchestrator session is named `<repository name> Manager` (for example, `wakarium Manager`). The repository name is that of the working folder's git repository; inside a worktree it is the original repository's name (outside git, the working folder's name). In the Claude Code desktop app this happens automatically. Claude Code in the terminal does not let a tool rename a session, so when prompted, type `/rename <repository name> Manager` into the chat box.
 
 ### Using the desktop app
 

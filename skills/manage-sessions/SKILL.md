@@ -35,9 +35,10 @@ Claude Code の作業の会話は、監視役がデスクトップ app で動い
 ## 1. 始める
 
 1. `local-rules.md` があれば読む
-2. この会話の名前を `Manager` にする（前の会話から続けていて、もう付けてあれば飛ばす）
-   - Codex: シェルで自分の会話の ID を読み（PowerShell は `$env:CODEX_THREAD_ID`、ほかは `echo $CODEX_THREAD_ID`）、`set_session_name`（threadId にその ID、name `Manager`）。ID が空、または失敗したら飛ばす（利用者には言わない）
-   - Claude Code: デスクトップ app では、遅延ツール `mcp__ccd_session_mgmt__set_session_title` を ToolSearch（`select:mcp__ccd_session_mgmt__set_session_title`）で読み込み、session_id `self`・title `Manager` で呼ぶ（利用者には言わない）。この道具が無い（ターミナルの Claude Code）か失敗したときだけ、最初の返事に一行「このセッションの名前を変えるには `/rename Manager` と入力してください」と添える
+2. この会話の名前を `<リポジトリ名> Manager` にする（例: wakarium で始めたら `wakarium Manager`。前の会話から続けていて、`<リポジトリ名> Manager` がもう付いていれば飛ばす）
+   - リポジトリ名: 作業フォルダの git リポジトリの名前。シェルで `git rev-parse --path-format=absolute --git-common-dir` を読み、その親フォルダの名前にする（worktree（`.claude/worktrees/…` など）の中でも、worktree のフォルダ名ではなく元のリポジトリの名前になる）。git の外なら作業フォルダの名前
+   - Codex: シェルで自分の会話の ID を読み（PowerShell は `$env:CODEX_THREAD_ID`、ほかは `echo $CODEX_THREAD_ID`）、`set_session_name`（threadId にその ID、name `<リポジトリ名> Manager`）。ID が空、または失敗したら飛ばす（利用者には言わない）
+   - Claude Code: デスクトップ app では、遅延ツール `mcp__ccd_session_mgmt__set_session_title` を ToolSearch（`select:mcp__ccd_session_mgmt__set_session_title`）で読み込み、session_id `self`・title `<リポジトリ名> Manager` で呼ぶ（利用者には言わない）。この道具が無い（ターミナルの Claude Code）か失敗したときだけ、最初の返事に一行「このセッションの名前を変えるには `/rename <リポジトリ名> Manager` と入力してください」と添える（`<リポジトリ名>` は実際の名前に置き換える）
 3. `get_usage` で利用枠・空きメモリ・CPU・動いている数・`launcher` を見る。`list_sessions`（scope=managed）で前回から続く会話を見る
    - `launcher` が `app` なら、app の道具を ToolSearch でまとめて読み込む（`select:mcp__ccd_session__start_session,mcp__ccd_sidebar__set_pinned,mcp__ccd_session_mgmt__list_sessions,mcp__ccd_session_mgmt__list_events,mcp__ccd_session_mgmt__stop_session,SendMessage`。利用者には言わない）
    - 同時に動かす数には上限が無い。空きメモリ（`minFreeMemGb`）と CPU の使用率（`maxCpuPct`）に余裕があるかぎり起こせる（`canStartNew`）
