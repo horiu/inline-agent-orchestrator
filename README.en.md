@@ -265,7 +265,7 @@ Quitting the desktop app also stops the worker sessions running in it. Switch wh
 
 **Auto-update**: this plugin does not update automatically by default. To turn on automatic updates, go to the Marketplaces tab in `/plugin` in Claude Code started in a terminal, select `inline-agent-orchestrator`, and choose "Enable auto-update". Auto-update puts the new version on disk within ten minutes after you send the first message in a session.
 
-The Claude desktop app runs Claude Code with `DISABLE_AUTOUPDATER=1`. According to the Claude Code documentation, this also turns plugin auto-update off (adding `FORCE_AUTOUPDATE_PLUGINS=1` turns it back on). Whether auto-update actually runs in the desktop app has not been verified. In a session with this setting, the orchestrator treats auto-update as off and checks GitHub as described under "Notice of a new version".
+The Claude desktop app runs Claude Code with `DISABLE_AUTOUPDATER=1`. The Claude Code documentation says this also stops plugin auto-update. Even so, on a PC that turned auto-update on and uses the desktop app, the new version arrived without a manual update (2026-10-22). So in the desktop app the orchestrator ignores this setting and goes only by the auto-update setting in `/plugin`. In Claude Code in the terminal, it treats auto-update as off when this setting (or `DISABLE_UPDATES` or `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`) is set without `FORCE_AUTOUPDATE_PLUGINS=1`.
 
 **Uninstall**: first, ask the orchestrator in the chat box to "restore the status line". Then type this command into the chat box and confirm the uninstall on the screen that opens:
 

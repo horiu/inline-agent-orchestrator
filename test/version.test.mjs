@@ -107,6 +107,11 @@ test('Claude Code: autoUpdate in settings wins over known_marketplaces.json; env
     (await versionInfo({ ...kArgs, env: { CLAUDE_CONFIG_DIR: k.config, DISABLE_AUTOUPDATER: '1', FORCE_AUTOUPDATE_PLUGINS: '1' } })).autoUpdate,
     true,
   );
+  // The desktop app sets DISABLE_AUTOUPDATER for Claude Code, but plugins still update there.
+  assert.equal(
+    (await versionInfo({ ...kArgs, env: { CLAUDE_CONFIG_DIR: k.config, DISABLE_AUTOUPDATER: '1', CLAUDE_CODE_ENTRYPOINT: 'claude-desktop' } })).autoUpdate,
+    true,
+  );
   // Neither says anything: off, as for any marketplace that is not Anthropic's.
   const none = claudeHome();
   assert.equal((await versionInfo({ ...args, dir: none.dir, root: none.root, env: { CLAUDE_CONFIG_DIR: none.config } })).autoUpdate, false);

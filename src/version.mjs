@@ -87,7 +87,11 @@ function claudeInstall({ env, root, cwd }) {
   const fromKnown = readJson(join(pluginsDir, 'known_marketplaces.json'))?.[MARKETPLACE]?.autoUpdate;
   if (typeof fromSettings === 'boolean') autoUpdate = fromSettings;
   else if (typeof fromKnown === 'boolean') autoUpdate = fromKnown;
-  if (NO_AUTOUPDATE_ENV.some((k) => envOn(env[k])) && !envOn(env.FORCE_AUTOUPDATE_PLUGINS)) autoUpdate = false;
+  // The Claude desktop app runs Claude Code with DISABLE_AUTOUPDATER=1, yet
+  // plugins installed there were updated by auto-update (seen 2026-10-22), so
+  // these variables count only outside the desktop app.
+  const desktop = env.CLAUDE_CODE_ENTRYPOINT === 'claude-desktop';
+  if (!desktop && NO_AUTOUPDATE_ENV.some((k) => envOn(env[k])) && !envOn(env.FORCE_AUTOUPDATE_PLUGINS)) autoUpdate = false;
   return { installed, autoUpdate };
 }
 

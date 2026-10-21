@@ -263,7 +263,7 @@ Claude のデスクトップアプリ（Code タブ）でオーケストレー�
 
 **自動更新**: このプラグインは、標準では自動で更新されません。自動で更新したい場合は、ターミナルで起動した Claude Code の `/plugin` の Marketplaces タブで `inline-agent-orchestrator` を選び、「Enable auto-update」を選びます。自動更新は、会話で最初のメッセージを送ってから10分以内に、新しい版をディスクに入れます。
 
-Claude のデスクトップアプリは Claude Code を `DISABLE_AUTOUPDATER=1` で動かしています。Claude Code の説明書によると、この設定があるとプラグインの自動更新も動きません（`FORCE_AUTOUPDATE_PLUGINS=1` を足すと動きます）。デスクトップアプリで自動更新が実際に動くかは確かめていません。オーケストレーターは、この設定がある会話では自動更新が切れているとみなし、上の「新しい版の知らせ」で GitHub の版を確かめます。
+Claude のデスクトップアプリは Claude Code を `DISABLE_AUTOUPDATER=1` で動かしています。Claude Code の説明書には、この設定があるとプラグインの自動更新も止まるとあります。ただし、デスクトップアプリで自動更新を入れた PC では、手で更新しなくても新しい版が入りました（2026-10-22）。そのためオーケストレーターは、デスクトップアプリではこの設定を見ずに、`/plugin` の自動更新の設定だけで判断します。ターミナルの Claude Code でこの設定（または `DISABLE_UPDATES`・`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`）があり、`FORCE_AUTOUPDATE_PLUGINS=1` が無いときは、自動更新が切れているとみなします。
 
 **アンインストール**: まずチャット欄でオーケストレーターに「status line を元に戻して」と依頼します。続けて、チャット欄に次のコマンドを入力し、開いた画面でアンインストールを確定します。
 
