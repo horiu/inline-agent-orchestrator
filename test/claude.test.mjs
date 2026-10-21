@@ -10,6 +10,7 @@ import { Store } from '../src/state.mjs';
 import { createTools, ToolError } from '../src/tools.mjs';
 
 const GB = 1024 ** 3;
+const idleCpus = () => [{ times: { user: 0, nice: 0, sys: 0, idle: 0, irq: 0 } }];
 const SID = '11111111-2222-4333-8444-555555555555';
 
 // Stand-in for the `claude` CLI, shaped after code.claude.com/docs/en/agent-view.
@@ -23,6 +24,7 @@ class FakeClaude {
 
   run = async (path, args, opts = {}) => {
     this.calls.push({ args, cwd: opts.cwd });
+    if (args[0] === 'auth') return { code: 0, stdout: JSON.stringify({ loggedIn: this.loggedIn ?? true, authMethod: 'claude.ai' }), stderr: '' };
     if (this.failNext) {
       const f = this.failNext;
       this.failNext = null;
@@ -74,7 +76,9 @@ class FakeClaude {
 let fake, store, tools, clock, backend;
 const calls = (first) => fake.calls.filter((c) => c.args[0] === first);
 
-function setup(config = {}) {
+// env: what the manager's MCP server sees (the desktop app sets
+// CLAUDE_CODE_ENTRYPOINT=claude-desktop; a terminal does not).
+function setup(config = {}, env = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'csm-claude-'));
   writeFileSync(join(dir, 'config.json'), JSON.stringify({ pollSec: 1, watchIntervalMin: 5 / 60, ...config }));
   store = new Store(dir);
@@ -84,7 +88,7 @@ function setup(config = {}) {
   ({ tools } = createTools({
     backend,
     store,
-    sys: { freemem: () => 8 * GB, totalmem: () => 16 * GB, now: () => clock, sleep: async (ms) => (clock += ms) },
+    sys: { freemem: () => 8 * GB, totalmem: () => 16 * GB, now: () => clock, sleep: async (ms) => (clock += ms), env, cpus: idleCpus },
   }));
 }
 
@@ -560,4 +564,104 @@ test('worker role exposes only report', () => {
   const only = toolsForRole(tools, 'worker');
   assert.deepEqual(Object.keys(only), ['report']);
   assert.ok(Object.keys(toolsForRole(tools, undefined)).length > 5);
+});
+
+const DESKTOP = { CLAUDE_CODE_ENTRYPOINT: 'claude-desktop' };
+const APP_ID = 'local_0b5e1d2c-3f4a-4b5c-8d6e-7f8091a2b3c4';
+const APP_SID = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+
+// What the manager does with start_session's answer in the desktop app.
+async function startInApp(name, extra = {}) {
+  const r = await tools.start_session.handler({ name, cwd: '/repo', prompt: 'やること', ...extra });
+  await tools.update_session.handler({ threadId: APP_ID, ...r.record });
+  return r;
+}
+
+test('in the desktop app, start_session returns what to pass to the app instead of running claude --bg', async () => {
+  setup({}, DESKTOP);
+  const u = await tools.get_usage.handler({});
+  assert.equal(u.launcher, 'app');
+  const r = await tools.start_session.handler({ name: '画面の確認', cwd: '/repo', prompt: 'やること', profile: 'implement', area: 'ui' });
+  assert.equal(r.started, false);
+  assert.equal(r.startInApp, true);
+  assert.equal(calls('--bg').length, 0);
+  const a = r.appStart;
+  assert.equal(a.initiation, 'user_asked');
+  assert.equal(a.context, 'fresh');
+  assert.equal(a.title, '画面の確認');
+  assert.equal(a.use_worktree, true);
+  assert.equal(a.cwd, '/repo');
+  assert.equal(a.model, 'opus');
+  assert.equal(a.effort, 'medium');
+  assert.equal(a.permission_mode, 'acceptEdits');
+  assert.match(a.prompt, /この会話の名前: 画面の確認\n/);
+  assert.match(a.prompt, /やること$/);
+  assert.match(a.background, /report/);
+  assert.match(a.background, /400 字/);
+  assert.ok(a.background.length >= 80, 'the app needs at least 80 characters of background');
+  assert.deepEqual(r.record, { name: '画面の確認', status: 'running', via: 'app', cwd: '/repo', area: 'ui', profile: 'implement', model: 'opus', effort: 'medium' });
+  assert.match(r.next, /set_pinned/);
+  // The guard still applies, and via="bg" keeps the old way.
+  const bg = await tools.start_session.handler({ name: '別', cwd: '/repo', prompt: 'p', via: 'bg' });
+  assert.equal(bg.started, true);
+  assert.equal(calls('--bg').length, 1);
+});
+
+test('an app session is watched through its interactive row, found by title until a report gives its ID', async () => {
+  setup({}, DESKTOP);
+  await startInApp('試し');
+  const t = store.state().targets[APP_ID];
+  assert.equal(t.via, 'app');
+  assert.deepEqual(t.lastSeen, { status: 'active', activeFlags: [] });
+  // Not listed yet: still starting.
+  assert.equal((await backend.status(APP_ID, t)).status, 'active');
+  fake.sessions.push({ pid: 9, cwd: '/repo/.claude/worktrees/x', kind: 'interactive', startedAt: clock + 1000, sessionId: APP_SID, name: '試し', status: 'busy' });
+  clock += 10_000;
+  assert.equal((await backend.status(APP_ID, store.state().targets[APP_ID])).status, 'active');
+  assert.equal(store.state().targets[APP_ID].sessionId, APP_SID, 'bound by title');
+  // Renamed in the app: the bound ID still finds it.
+  fake.set(APP_SID, { name: '別の題名', status: 'idle' });
+  const r = await tools.wait_events.handler({});
+  assert.deepEqual(r.events.map((e) => [e.type, e.from, e.to]), [['status', 'active', 'idle']]);
+  const listed = (await tools.list_sessions.handler({})).sessions[0];
+  assert.equal(listed.via, 'app');
+  assert.equal(listed.status, 'idle');
+});
+
+test('an app session that never shows up is notLoaded once the start grace is over', async () => {
+  setup({}, DESKTOP);
+  await startInApp('消えた');
+  clock += 4 * 60 * 1000;
+  assert.equal((await backend.status(APP_ID, store.state().targets[APP_ID])).status, 'notLoaded');
+});
+
+test("an app worker's report carries its session ID, which links the record", async () => {
+  setup({}, DESKTOP);
+  await startInApp('報告する');
+  // The worker's own server (the plugin's) runs with its session's ID.
+  const worker = createTools({ backend, store, sys: { env: { CLAUDE_CODE_SESSION_ID: APP_SID } } }).tools;
+  await worker.report.handler({ kind: 'progress', text: '途中', from: '報告する' });
+  const r = await tools.wait_events.handler({});
+  const rep = r.events.find((e) => e.type === 'report');
+  assert.equal(rep.threadId, APP_ID);
+  assert.equal(rep.sessionId, APP_SID);
+  assert.equal(store.state().targets[APP_ID].sessionId, APP_SID);
+});
+
+test('app sessions are read, messaged and stopped with the app tools; renaming keeps the old name', async () => {
+  setup({}, DESKTOP);
+  await startInApp('app の会話');
+  await assert.rejects(tools.read_session.handler({ threadId: APP_ID }), (e) => e instanceof ToolError && /list_events/.test(e.message));
+  await assert.rejects(tools.send_message.handler({ threadId: APP_ID, message: 'x' }), (e) => e instanceof ToolError && /SendMessage/.test(e.message));
+  await assert.rejects(tools.stop_session.handler({ threadId: APP_ID }), (e) => e instanceof ToolError && /stop_session/.test(e.message));
+  assert.equal(calls('--resume').length + calls('stop').length + calls('logs').length, 0);
+  const n = await tools.set_session_name.handler({ threadId: APP_ID, name: '新' });
+  assert.match(n.note, /set_session_title/);
+  assert.deepEqual(store.state().targets[APP_ID].aliases, ['app の会話']);
+});
+
+test('claude --bg is refused with a clear reason when the CLI is not logged in', async () => {
+  fake.loggedIn = false;
+  await assert.rejects(tools.start_session.handler({ name: 'x', cwd: '/r', prompt: 'p' }), (e) => e instanceof ToolError && /ログインしていない/.test(e.message) && /via="app"/.test(e.message));
+  assert.equal(calls('--bg').length, 0);
 });

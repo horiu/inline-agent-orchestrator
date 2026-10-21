@@ -5,8 +5,8 @@
     "path": "claude",
     "permissionMode": "acceptEdits"
   },
-  "maxRunning": 3,
   "minFreeMemGb": 2,
+  "maxCpuPct": 90,
   "pauseAtPct": {
     "claude": null,
     "codex": 95

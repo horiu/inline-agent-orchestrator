@@ -32,9 +32,10 @@ test('Store anchors a relative directory and all file paths to the manager cwd',
 
 test('config merges user values over defaults, including a BOM-prefixed file', () => {
   const s = fresh();
-  writeFileSync(s.configPath, '﻿' + JSON.stringify({ maxRunning: 5, defaults: { model: 'm' } }));
+  writeFileSync(s.configPath, '﻿' + JSON.stringify({ minFreeMemGb: 5, defaults: { model: 'm' } }));
   const c = s.config();
-  assert.equal(c.maxRunning, 5);
+  assert.equal(c.minFreeMemGb, 5);
+  assert.equal(c.maxCpuPct, 90);
   assert.equal(c.defaults.model, 'm');
   assert.equal(c.defaults.sandbox, DEFAULT_CONFIG.defaults.sandbox);
 });

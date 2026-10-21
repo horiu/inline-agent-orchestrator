@@ -10,6 +10,8 @@ import { createTools, ToolError } from '../src/tools.mjs';
 import { FakeAppServer } from './fake-appserver.mjs';
 
 const GB = 1024 ** 3;
+// A CPU that is never busy, so the real load while tests run does not count.
+const idleCpus = () => [{ times: { user: 0, nice: 0, sys: 0, idle: 0, irq: 0 } }];
 let fake, store, tools, freeGb, clock;
 
 function setup(config = {}) {
@@ -22,7 +24,7 @@ function setup(config = {}) {
   ({ tools } = createTools({
     client,
     store,
-    sys: { freemem: () => freeGb * GB, totalmem: () => 16 * GB, now: () => clock, sleep: async (ms) => (clock += ms) },
+    sys: { freemem: () => freeGb * GB, totalmem: () => 16 * GB, now: () => clock, sleep: async (ms) => (clock += ms), cpus: idleCpus },
   }));
 }
 
@@ -189,23 +191,48 @@ test('legacy detection excludes manual, partial, Claude and explicitly opted-out
 test('relative manager data directories are absolute in the worker environment', async () => {
   const relativeStore = new Store(relative(process.cwd(), store.dir));
   const client = new AppServerClient({ connector: fake.connector() });
-  const { tools: relativeTools } = createTools({ client, store: relativeStore, sys: { freemem: () => 8 * GB } });
+  const { tools: relativeTools } = createTools({ client, store: relativeStore, sys: { freemem: () => 8 * GB, cpus: idleCpus, sleep: async () => {} } });
   await relativeTools.start_session.handler({ name: 'relative mailbox', cwd: '/different-repo', prompt: 'report' });
   const home = calls('thread/start')[0].params.config['mcp_servers.session-report'].env.CSM_HOME;
   assert.equal(isAbsolute(home), true);
   assert.equal(home, store.dir);
 });
 
-test('start_session refuses when the running limit is reached, unless force', async () => {
-  setup({ maxRunning: 1 });
-  fake.addThread('busy', { status: { type: 'active', activeFlags: [] } });
-  store.updateTarget('busy', { name: 'busy', status: 'running' });
-  const r = await tools.start_session.handler({ name: 'b', cwd: '/r', prompt: 'p' });
+test('the number of running sessions does not limit; a busy CPU does, unless force', async () => {
+  // Two samples of one CPU: 95 of 100 ticks busy between them.
+  let snap = 0;
+  const cpus = () => [{ times: snap++ === 0 ? { user: 0, nice: 0, sys: 0, idle: 0, irq: 0 } : { user: 95, nice: 0, sys: 0, idle: 5, irq: 0 } }];
+  const client = new AppServerClient({ connector: fake.connector() });
+  const busy = createTools({ client, store, sys: { freemem: () => 8 * GB, totalmem: () => 16 * GB, now: () => clock, sleep: async (ms) => (clock += ms), cpus } }).tools;
+  for (const id of ['r1', 'r2', 'r3']) {
+    fake.addThread(id, { status: { type: 'active', activeFlags: [] } });
+    store.updateTarget(id, { name: id, status: 'running' });
+  }
+  const r = await busy.start_session.handler({ name: 'b', cwd: '/r', prompt: 'p' });
   assert.equal(r.started, false);
-  assert.match(r.reasons[0], /動いている会話が 1 本（上限 1）/);
+  assert.deepEqual(r.reasons, ['CPU の使用率 95%（上限 90%）']);
+  assert.equal(r.guard.running, 3);
   assert.equal(calls('thread/start').length, 0);
-  const forced = await tools.start_session.handler({ name: 'b', cwd: '/r', prompt: 'p', force: true });
+  const forced = await busy.start_session.handler({ name: 'b', cwd: '/r', prompt: 'p', force: true });
   assert.equal(forced.started, true);
+  // With the CPU calm, three running sessions do not stop a fourth.
+  snap = 0;
+  const calm = () => [{ times: snap++ === 0 ? { user: 0, nice: 0, sys: 0, idle: 0, irq: 0 } : { user: 20, nice: 0, sys: 0, idle: 80, irq: 0 } }];
+  const ok = createTools({ client, store, sys: { freemem: () => 8 * GB, now: () => clock, sleep: async (ms) => (clock += ms), cpus: calm } }).tools;
+  const u = await ok.get_usage.handler({});
+  assert.equal(u.canStartNew, true);
+  assert.equal(u.cpuPct, 20);
+  assert.equal(u.maxCpuPct, 90);
+  assert.equal('maxRunning' in u, false);
+});
+
+test('maxCpuPct null turns the CPU check off', async () => {
+  setup({ maxCpuPct: null });
+  const u = await tools.get_usage.handler({});
+  assert.equal(u.cpuPct, null);
+  assert.equal(u.maxCpuPct, null);
+  assert.equal(u.launcher, null, 'Codex has no app sessions');
+  await assert.rejects(tools.start_session.handler({ name: 'x', cwd: '/r', prompt: 'p', via: 'app' }), (e) => e instanceof ToolError && /Claude Code だけ/.test(e.message));
 });
 
 test('start_session refuses on low memory and on usage above pauseAtPct', async () => {
