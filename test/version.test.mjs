@@ -90,6 +90,11 @@ test('Claude Code: the user install counts, not one for another project', async 
   const v = await versionInfo({ agent: 'claude', running: '0.7.0', dir: h.dir, env: { CLAUDE_CONFIG_DIR: h.config }, root: h.root, cwd: '/repo', fetchFn: noFetch });
   assert.equal(v.installed, '0.7.0');
   assert.equal(v.reloadNeeded, false);
+  // Only another project's install: it does not load here, so nothing is known.
+  const other = claudeHome({ settings: autoOn, records: [{ scope: 'project', projectPath: '/other', version: '0.9.0' }] });
+  const o = await versionInfo({ agent: 'claude', running: '0.7.0', dir: other.dir, env: { CLAUDE_CONFIG_DIR: other.config }, root: other.root, cwd: '/repo', fetchFn: noFetch });
+  assert.equal(o.installed, null);
+  assert.equal(o.reloadNeeded, false);
 });
 
 test('Claude Code: autoUpdate in settings wins over known_marketplaces.json; env can turn it off', async () => {
@@ -117,6 +122,17 @@ test('Claude Code: autoUpdate in settings wins over known_marketplaces.json; env
   assert.equal((await versionInfo({ ...args, dir: none.dir, root: none.root, env: { CLAUDE_CONFIG_DIR: none.config } })).autoUpdate, false);
 });
 
+test('Claude desktop app: auto-update on, but GitHub is still read once a day', async () => {
+  const h = claudeHome({ installed: '0.8.0', running: '0.8.0', settings: autoOn });
+  const log = [];
+  const env = { CLAUDE_CONFIG_DIR: h.config, DISABLE_AUTOUPDATER: '1', CLAUDE_CODE_ENTRYPOINT: 'claude-desktop' };
+  const v = await versionInfo({ agent: 'claude', running: '0.8.0', dir: h.dir, env, root: h.root, fetchFn: fakeFetch('0.9.0', log) });
+  assert.equal(v.autoUpdate, true);
+  assert.equal(v.latest, '0.9.0');
+  assert.equal(v.updateAvailable, true);
+  assert.equal(log.length, 1);
+});
+
 test('auto-update off: the latest version on GitHub is read at most once a day', async () => {
   const h = claudeHome({ installed: '0.8.0', running: '0.8.0' });
   const log = [];
@@ -136,15 +152,20 @@ test('auto-update off: the latest version on GitHub is read at most once a day',
   assert.equal(JSON.parse(readFileSync(join(h.dir, CHECK_FILE), 'utf8')).latest, '1.0.0');
 });
 
-test('auto-update off: a failed read gives latest null and waits a day', async () => {
+test('auto-update off: a failed read gives latest null and is tried again in an hour', async () => {
   const h = claudeHome({ installed: '0.8.0', running: '0.8.0' });
   const log = [];
-  const args = { agent: 'claude', running: '0.8.0', dir: h.dir, env: { CLAUDE_CONFIG_DIR: h.config }, root: h.root };
+  let clock = Date.parse('2026-10-22T00:00:00Z');
+  const args = { agent: 'claude', running: '0.8.0', dir: h.dir, env: { CLAUDE_CONFIG_DIR: h.config }, root: h.root, now: () => clock };
   const v = await versionInfo({ ...args, fetchFn: fakeFetch(new Error('offline'), log) });
   assert.equal(v.latest, null);
   assert.equal(v.updateAvailable, false);
+  clock += 60 * 60_000 - 1;
   await versionInfo({ ...args, fetchFn: fakeFetch('0.9.0', log) });
   assert.equal(log.length, 1);
+  clock += 1;
+  assert.equal((await versionInfo({ ...args, fetchFn: fakeFetch('0.9.0', log) })).latest, '0.9.0');
+  assert.equal(log.length, 2);
   // No traffic that is not needed when the user turned it off.
   const quiet = claudeHome({ installed: '0.8.0', running: '0.8.0' });
   const q = await versionInfo({ ...args, dir: quiet.dir, root: quiet.root, env: { CLAUDE_CONFIG_DIR: quiet.config, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' }, fetchFn: noFetch });

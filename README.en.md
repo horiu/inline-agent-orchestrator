@@ -261,11 +261,19 @@ A running session keeps using the old version after an update. To switch it to t
 
 Quitting the desktop app also stops the worker sessions running in it. Switch while no worker session is running.
 
-**Notice of a new version**: the orchestrator checks the version when it starts and when it resumes after stopping. When a new version is on disk but this conversation still uses the old one, it tells you how to switch, as above. When auto-update is off and a new version is out on GitHub (checked at most once a day), it asks whether to update, and on your yes runs `claude plugin marketplace update` and `claude plugin update`. Each notice appears only once per conversation.
+**Notice of a new version**: the orchestrator checks the version when it starts and when it resumes after stopping. When a new version is on disk but this conversation still uses the old one, it tells you how to switch, as above. When a new version is out on GitHub but not installed, it asks whether to update, and on your yes runs `claude plugin marketplace update` and `claude plugin update`. GitHub is checked when auto-update is off and in the Claude desktop app (see "Auto-update" below), at most once a day (an hour later when the read failed). Each notice appears only once per conversation for the same versions. It is recorded in `state.json` in the data folder, so compacting or resuming the conversation does not repeat it.
 
 **Auto-update**: this plugin does not update automatically by default. To turn on automatic updates, go to the Marketplaces tab in `/plugin` in Claude Code started in a terminal, select `inline-agent-orchestrator`, and choose "Enable auto-update". Auto-update puts the new version on disk within ten minutes after you send the first message in a session.
 
-The Claude desktop app runs Claude Code with `DISABLE_AUTOUPDATER=1`. The Claude Code documentation says this also stops plugin auto-update. Even so, on a PC that turned auto-update on and uses the desktop app, the new version arrived without a manual update (2026-10-22). So in the desktop app the orchestrator ignores this setting and goes only by the auto-update setting in `/plugin`. In Claude Code in the terminal, it treats auto-update as off when this setting (or `DISABLE_UPDATES` or `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`) is set without `FORCE_AUTOUPDATE_PLUGINS=1`.
+The Claude desktop app runs Claude Code with `DISABLE_AUTOUPDATER=1`. The Claude Code documentation says this also stops plugin auto-update (adding `FORCE_AUTOUPDATE_PLUGINS=1` turns it back on).
+
+Even so, on a PC that turned auto-update on and uses only the desktop app, the following happened. This was seen only once, and which process installed the new version is not known.
+
+- 2026-10-21T21:51:43Z: 0.7.0 was merged into main
+- 21:53:45Z: a new conversation started in the desktop app
+- 21:54:51Z (about a minute later): the version in `installed_plugins.json` became 0.7.0. No conversation ran `claude plugin update` by hand
+
+So in the desktop app the orchestrator ignores this setting and returns `autoUpdate` as set in `/plugin`. In case auto-update does not run there after all, the desktop app still checks GitHub once a day and asks whether to update when a newer version is not installed. In Claude Code in the terminal, as documented, it treats auto-update as off when this setting (or `DISABLE_UPDATES` or `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`) is set without `FORCE_AUTOUPDATE_PLUGINS=1`.
 
 **Uninstall**: first, ask the orchestrator in the chat box to "restore the status line". Then type this command into the chat box and confirm the uninstall on the screen that opens:
 

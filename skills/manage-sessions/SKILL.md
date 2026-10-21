@@ -50,14 +50,16 @@ Claude Code の作業の会話は、監視役が Claude のデスクトップア
 
 ### 版の知らせ
 
-`get_usage` の `version` は、この道具（manage-sessions のプラグイン）の版: `version.running`（この会話が使っている版。一番上の `running`（動いている会話の数）とは別）・`installed`（ディスクに入っている版）・`autoUpdate`（自動更新）・`latest`（自動更新が切れているときだけ読む、GitHub の最新の版）。値が null のもの（分からない・プラグインとして入れていない）については何も言わない。同じ知らせは、同じ版の組み合わせ（`running`・`installed`・`latest`）について、この会話で1回だけ出す（この会話で前に出していれば出さない）。
+`get_usage` の `version` は、この道具（manage-sessions のプラグイン）の版: `version.running`（この会話が使っている版。一番上の `running`（動いている会話の数）とは別）・`installed`（ディスクに入っている版）・`autoUpdate`（自動更新）・`latest`（自動更新が切れているときと、Claude のデスクトップアプリで読む、GitHub の最新の版）・`notified`。値が null のもの（分からない・プラグインとして入れていない）については何も言わない。
+
+同じ知らせは、同じ版の組み合わせについて、この会話で1回だけ出す。`session-manager` が `state.json` に記録し、`notified` で返す（`false` で返したときに記録する）。`reloadNeeded` か `updateAvailable` が true で、`notified` が false のときだけ伝える。`notified` が true なら、会話の圧縮や再開のあとでも、もう伝えない。
 
 - `reloadNeeded` が true（新しい版が入っているのに、この会話は古い版のまま）: 最初の返事で一言伝える。切り替え方は、監視役の動いている所で変える
   - Claude のデスクトップアプリ（`launcher` が `app`）:「manage-sessions のプラグインの新しい版 <installed> が入っていますが、この会話はまだ <running> を使っています。作業の会話が動いていないときに、Claude のデスクトップアプリを終了して起動し直してください」（デスクトップアプリでは `/reload-plugins` で `session-manager` が新しい版に切り替わるかを確かめていないので、案内しない）
   - ターミナルの Claude Code（`launcher` が `bg`）:「…この会話はまだ <running> を使っています。作業の会話が動いていないときに、この会話の入力欄に `/reload-plugins` と入力するか、Claude Code を起動し直してください」（`/reload-plugins --force` を求められたら、それを入力してもらう）
   - Codex:「…この会話はまだ <running> を使っています。作業の会話が動いていないときに、Codex を終了して起動し直してください」
   - 作業の会話が動いているとき（`get_usage` の一番上の `running`（動いている会話の数）が 1 以上。`version.running` ではない）は「いま動いている作業の会話が終わってから」と添える（Claude のデスクトップアプリを終了すると、そこで動いている作業の会話も止まる）
-- `updateAvailable` が true（自動更新が切れていて、新しい版 `latest` が出ているのに入っていない）: 最初の返事で「manage-sessions のプラグインの新しい版 <latest> が出ています（入っているのは <installed>）。更新しますか」と聞く
+- `updateAvailable` が true（新しい版 `latest` が出ているのに入っていない）: 最初の返事で「manage-sessions のプラグインの新しい版 <latest> が出ています（入っているのは <installed>）。更新しますか」と聞く。`autoUpdate` が true（Claude のデスクトップアプリで、自動更新が入っているのにまだ入っていないとき）は「自動更新が入っていますが、まだ入っていません（自動更新は会話で最初のメッセージを送ってから10分以内に動きます）。今すぐ更新しますか」と聞く
   - 了承されたら、Claude Code ではシェルで `claude plugin marketplace update inline-agent-orchestrator` と `claude plugin update inline-agent-orchestrator@inline-agent-orchestrator` を順に実行する。Codex ではこの道具のフォルダ（`~/.codex/config.toml` の `[mcp_servers.session-manager]` の `args` にある `src/server.mjs` の2つ上のフォルダ。既定は `~/.codex/inline-agent-orchestrator`）で `git pull` と `node src/setup.mjs codex` を実行する。そのあと、上の `reloadNeeded` と同じように切り替えを頼む（新しい版は <latest>）
   - 失敗したら、出力の要点を伝えて進める。断られたら、この会話ではもう聞かない
 

@@ -5,8 +5,9 @@
 //     it loaded, while auto-update puts the new one on disk.
 //   Codex: the clone the server runs from (setup.mjs registers that folder),
 //     which `git pull` changes under the running server.
-// With auto-update off, the latest version on GitHub is read at most once a
-// day (kept in the state folder); a failed read is skipped quietly.
+// With auto-update off (and in the Claude desktop app, see claudeInstall),
+// the latest version on GitHub is read at most once a day (kept in the state
+// folder); a failed read is skipped quietly and tried again in an hour.
 
 import { readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -18,6 +19,7 @@ const MARKETPLACE = 'inline-agent-orchestrator';
 const LATEST_URL = 'https://raw.githubusercontent.com/horiu/inline-agent-orchestrator/main/.claude-plugin/plugin.json';
 export const CHECK_FILE = 'version-check.json';
 const CHECK_EVERY_MS = 24 * 60 * 60_000;
+const RETRY_FAILED_MS = 60 * 60_000;
 const FETCH_TIMEOUT_MS = 5000;
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 // Each of these turns Claude Code's plugin auto-update off, unless
@@ -66,54 +68,60 @@ const isInside = (child, parent) => {
 };
 // Windows paths differ only in case (C: and c:) for the same folder.
 const samePath = (a, b) => relative(resolve(a), resolve(b)) === '';
-const envOn =(v) => Boolean(v) && v !== '0' && String(v).toLowerCase() !== 'false';
+const envOn = (v) => Boolean(v) && v !== '0' && String(v).toLowerCase() !== 'false';
 const newest = (versions) => versions.reduce((a, v) => (a === null || compareVersions(v, a) === 1 ? v : a), null);
 
 // Installed version and auto-update of the Claude Code plugin. Both are null
 // when this server is not the installed plugin (--plugin-dir, or a copy
 // placed by hand): such a copy has no install record of its own.
+// checkLatest: whether to read the latest version on GitHub.
 function claudeInstall({ env, root, cwd }) {
   const configDir = env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude');
   const pluginsDir = env.CLAUDE_CODE_PLUGIN_CACHE_DIR || join(configDir, 'plugins');
-  if (!isInside(root, join(pluginsDir, 'cache'))) return { installed: null, autoUpdate: null };
+  if (!isInside(root, join(pluginsDir, 'cache'))) return { installed: null, autoUpdate: null, checkLatest: false };
   const records = readJson(join(pluginsDir, 'installed_plugins.json'))?.plugins?.[PLUGIN_ID];
   const list = Array.isArray(records) ? records.filter((r) => SEMVER.test(String(r?.version ?? ''))) : [];
   // The user's install, or one for this project; any other project's install
-  // does not load here.
+  // does not load here, so without either the installed version is unknown.
   const here = list.filter((r) => r.scope === 'user' || (r.projectPath && samePath(r.projectPath, cwd)));
-  const installed = newest((here.length ? here : list).map((r) => r.version));
+  const installed = newest(here.map((r) => r.version));
   let autoUpdate = false; // the default for a marketplace that is not Anthropic's
   const fromSettings = readJson(join(configDir, 'settings.json'))?.extraKnownMarketplaces?.[MARKETPLACE]?.autoUpdate;
   const fromKnown = readJson(join(pluginsDir, 'known_marketplaces.json'))?.[MARKETPLACE]?.autoUpdate;
   if (typeof fromSettings === 'boolean') autoUpdate = fromSettings;
   else if (typeof fromKnown === 'boolean') autoUpdate = fromKnown;
-  // The Claude desktop app runs Claude Code with DISABLE_AUTOUPDATER=1, yet
-  // plugins installed there were updated by auto-update (seen 2026-10-22), so
-  // these variables count only outside the desktop app.
+  const envOff = NO_AUTOUPDATE_ENV.some((k) => envOn(env[k])) && !envOn(env.FORCE_AUTOUPDATE_PLUGINS);
+  // The Claude desktop app runs Claude Code with DISABLE_AUTOUPDATER=1, yet a
+  // plugin installed there was updated by auto-update once (2026-10-21), so
+  // the variables count only outside the desktop app. That was seen only
+  // once, so the desktop app still reads GitHub as if auto-update were off.
   const desktop = env.CLAUDE_CODE_ENTRYPOINT === 'claude-desktop';
-  if (!desktop && NO_AUTOUPDATE_ENV.some((k) => envOn(env[k])) && !envOn(env.FORCE_AUTOUPDATE_PLUGINS)) autoUpdate = false;
-  return { installed, autoUpdate };
+  if (envOff && !desktop) autoUpdate = false;
+  return { installed, autoUpdate, checkLatest: !autoUpdate || (desktop && envOff) };
 }
 
 // Codex runs the server from the clone that setup.mjs registered; nothing
 // updates it but `git pull`.
 function codexInstall({ root }) {
   const v = readJson(join(root, 'package.json'))?.version;
-  return { installed: SEMVER.test(String(v ?? '')) ? v : null, autoUpdate: false };
+  return { installed: SEMVER.test(String(v ?? '')) ? v : null, autoUpdate: false, checkLatest: true };
 }
 
 async function latestVersion({ dir, now, fetchFn }) {
   const path = join(dir, CHECK_FILE);
   const saved = readJson(path);
   const at = Date.parse(saved?.checkedAt ?? '');
-  if (Number.isFinite(at) && now() >= at && now() - at < CHECK_EVERY_MS) return typeof saved.latest === 'string' ? saved.latest : null;
+  const savedLatest = typeof saved?.latest === 'string' ? saved.latest : null;
+  // A failed read (no version kept) is tried again sooner.
+  const every = savedLatest ? CHECK_EVERY_MS : RETRY_FAILED_MS;
+  if (Number.isFinite(at) && now() >= at && now() - at < every) return savedLatest;
   let latest = null;
   try {
     const res = await fetchFn(LATEST_URL, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
     const v = res.ok ? (await res.json())?.version : null;
     if (SEMVER.test(String(v ?? ''))) latest = v;
   } catch {
-    // offline or blocked: try again tomorrow
+    // offline or blocked: try again in an hour
   }
   // Other conversations may read it meanwhile: never leave it half written.
   const tmp = `${path}.${process.pid}.tmp`;
@@ -132,8 +140,9 @@ export async function versionInfo({ agent, running, dir, env = process.env, root
   let autoUpdate = null;
   let latest = null;
   try {
-    ({ installed, autoUpdate } = agent === 'claude' ? claudeInstall({ env, root, cwd }) : codexInstall({ root }));
-    if (installed && autoUpdate === false && !envOn(env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC) && fetchFn) latest = await latestVersion({ dir, now, fetchFn });
+    let checkLatest;
+    ({ installed, autoUpdate, checkLatest } = agent === 'claude' ? claudeInstall({ env, root, cwd }) : codexInstall({ root }));
+    if (installed && checkLatest && !envOn(env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC) && fetchFn) latest = await latestVersion({ dir, now, fetchFn });
   } catch {
     // the version check never fails get_usage
   }

@@ -17,6 +17,8 @@ const ACTIVE_TARGET = new Set(['running', 'waiting_user', 'paused', 'paused_usag
 const WAITS_FOR_USER = { waitingOnApproval: 'approval', waitingOnUserInput: 'input' };
 const QUESTION_CHARS = 300;
 const QUESTIONS_KEPT = 3;
+// Version notices already given (conversation and versions), newest last.
+const NOTICES_KEPT = 50;
 // A stuck count saved longer ago than this is from a watch that is no longer
 // running (the manager was closed or stopped): a new watch starts over.
 const STUCK_GAP_MS = 10 * 60_000;
@@ -142,6 +144,21 @@ export function createTools({ backend, client, store, sys = {} }) {
       });
     }
     return out;
+  }
+
+  // A version notice goes to the user once per conversation and combination
+  // of versions. It is kept in state.json, so a compacted or resumed
+  // conversation does not give it again; returning notified false records it.
+  function noticeOnce(version) {
+    if (!version.reloadNeeded && !version.updateAvailable) return { ...version, notified: false };
+    const conversation = env.CLAUDE_CODE_SESSION_ID ?? env.CODEX_THREAD_ID ?? `pid:${process.pid}`;
+    const key = [conversation, version.running, version.installed, version.latest].join('|');
+    const s = store.state();
+    const given = Array.isArray(s.versionNotices) ? s.versionNotices : [];
+    if (given.includes(key)) return { ...version, notified: true };
+    s.versionNotices = [...given, key].slice(-NOTICES_KEPT);
+    store.saveState(s);
+    return { ...version, notified: false };
   }
 
   function appOnly(threadId, what) {
@@ -533,11 +550,15 @@ export function createTools({ backend, client, store, sys = {} }) {
 
     get_usage: {
       description:
-        '利用枠（窓ごとの使用率とリセットの時刻）・空きメモリ・動いている会話の数と、いま新しく動かしてよいか（canStartNew と理由）を返す。pauseAtPct が null なら利用枠では止めない（読めなくてもよい）。profiles は仕事の種類ごとのおすすめのモデルとエフォート（null は、start_session ではそれぞれの既定、send_message では今の値のまま）。version はこの道具の版: running（動いている版）・installed（ディスクに入っている版。プラグインとして入れていなければ null）・autoUpdate（自動更新）・latest（自動更新が切れているときだけ、GitHub の最新の版。1日1回まで読む）・reloadNeeded（新しい版が入っているのに、この会話は古い版のまま）・updateAvailable（新しい版が出ているのに入っていない）。',
+        '利用枠（窓ごとの使用率とリセットの時刻）・空きメモリ・動いている会話の数と、いま新しく動かしてよいか（canStartNew と理由）を返す。pauseAtPct が null なら利用枠では止めない（読めなくてもよい）。profiles は仕事の種類ごとのおすすめのモデルとエフォート（null は、start_session ではそれぞれの既定、send_message では今の値のまま）。version はこの道具の版: running（動いている版）・installed（ディスクに入っている版。プラグインとして入れていなければ null）・autoUpdate（自動更新）・latest（自動更新が切れているとき（と Claude のデスクトップアプリ）だけ、GitHub の最新の版。1日1回まで読む）・reloadNeeded（新しい版が入っているのに、この会話は古い版のまま）・updateAvailable（新しい版が出ているのに入っていない）・notified（この会話で同じ版の組み合わせをすでに返した。false で返すときに記録するので、reloadNeeded か updateAvailable が true で notified が false なら、そのとき利用者に伝える）。',
+      // Marked read-only for approval prompts: it changes no conversation,
+      // only the manager's own record of version notices given.
       readOnly: true,
       inputSchema: { type: 'object', properties: {} },
       async handler() {
-        return { ...(await guard()), profiles: profileList(store.config()), version: sys.version ? await sys.version() : null };
+        // The CPU sample and the version check (which may read GitHub) wait together.
+        const [g, version] = await Promise.all([guard(), sys.version ? sys.version() : null]);
+        return { ...g, profiles: profileList(store.config()), version: version && noticeOnce(version) };
       },
     },
 

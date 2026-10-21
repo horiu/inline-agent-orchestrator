@@ -350,8 +350,20 @@ test('get_usage labels windows and reports the guard', async () => {
 test('get_usage returns the version check the server gives', async () => {
   const version = { running: '0.7.0', installed: '0.8.0', autoUpdate: true, latest: null, reloadNeeded: true, updateAvailable: false };
   const client = new AppServerClient({ connector: new FakeAppServer().connector() });
-  const { tools: t } = createTools({ client, store, sys: { freemem: () => 8 * GB, totalmem: () => 16 * GB, cpus: idleCpus, version: async () => version } });
-  assert.deepEqual((await t.get_usage.handler({})).version, version);
+  const make = (sessionId, v = version) =>
+    createTools({ client, store, sys: { freemem: () => 8 * GB, totalmem: () => 16 * GB, cpus: idleCpus, env: { CLAUDE_CODE_SESSION_ID: sessionId }, version: async () => v } }).tools;
+  const t = make('s1');
+  assert.deepEqual((await t.get_usage.handler({})).version, { ...version, notified: false });
+  // Once per conversation and versions, kept in state.json (a resumed or
+  // compacted conversation runs a new tools object).
+  assert.equal((await make('s1').get_usage.handler({})).version.notified, true);
+  assert.equal((await make('s2').get_usage.handler({})).version.notified, false, 'another conversation');
+  assert.equal((await make('s1', { ...version, installed: '0.9.0' }).get_usage.handler({})).version.notified, false, 'other versions');
+  // Nothing to tell: nothing recorded.
+  const quiet = { ...version, installed: '0.7.0', reloadNeeded: false };
+  const before = store.state().versionNotices.length;
+  assert.equal((await make('s3', quiet).get_usage.handler({})).version.notified, false);
+  assert.equal(store.state().versionNotices.length, before);
 });
 
 test('get_usage prefers rateLimitsByLimitId when present', async () => {
