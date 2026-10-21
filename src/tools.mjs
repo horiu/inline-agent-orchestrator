@@ -679,8 +679,11 @@ export function createTools({ backend, client, store, sys = {} }) {
           const working = ids.some((id) => live[id]?.status === 'active' && !(live[id].activeFlags ?? []).some((f) => WAITS_FOR_USER[f]));
           // Added while this call waits: not read yet, so counted as working.
           const added = Object.entries(s.targets).some(([id, t]) => !ids.includes(id) && t.status === 'running');
+          // Once usageRecovered has been reported, those sessions wait for the
+          // manager, not for the limit.
+          const recovered = paused.length > 0 && alerts.usageRecovered === paused.slice().sort().join(',');
           const usageWait =
-            Object.values(s.targets).some((t) => t.status === 'paused_usage') ||
+            Object.entries(s.targets).some(([id, t]) => t.status === 'paused_usage' && !(recovered && paused.includes(id))) ||
             (usageBlocked && waitingRoom.some((id) => usageFor(state.targets[id])));
           const queued = Object.values(s.targets).some((t) => t.queue?.length && (t.status === 'running' || t.status === 'waiting_user'));
           return !working && !added && !usageWait && !queued;
