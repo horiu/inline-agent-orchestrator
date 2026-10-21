@@ -37,13 +37,13 @@ Claude Code の作業の会話は、監視役が Claude のデスクトップア
 
 ## 1. 始める
 
-1. `local-rules.md` があれば読む。状態のフォルダに `handoff.md`（前の見回りが止まったときの引き継ぎメモ）があれば読み、そこに書いた続きから始める（管理中の会話・決めたこと・次にやること）。監視役の会話の id が書いてあれば覚えておく（1. の 2 で前の監視役のピン止めを外すのに使う）。3. の `list_sessions` と食い違えば `list_sessions` を正とし、管理中の会話が全部 `done` なら参考にとどめる
+1. `local-rules.md` があれば読む。状態のフォルダに `handoff.md`（前の見回りが止まったときの引き継ぎメモ）があれば読み、そこに書いた続きから始める（管理中の会話・決めたこと・次にやること）。「監視役の会話」に自分と同じリポジトリ名（1. の 2）の行があれば、その id を覚えておく（1. の 2 で前の監視役のピン止めを外すのに使う）。3. の `list_sessions` と食い違えば `list_sessions` を正とし、管理中の会話が全部 `done` なら参考にとどめる
 2. この会話の名前を `<リポジトリ名> Manager` にする（例: wakarium で始めたら `wakarium Manager`。前の会話から続けていて、`<リポジトリ名> Manager` がもう付いていれば名前の変更は飛ばす。下の監視役のピン止めは飛ばさない）
    - リポジトリ名: 作業フォルダの git リポジトリの名前。シェルで `git rev-parse --path-format=absolute --git-common-dir` を読み、その親フォルダの名前にする（worktree（`.claude/worktrees/…` など）の中でも、worktree のフォルダ名ではなく元のリポジトリの名前になる）。git の外なら作業フォルダの名前
    - Codex: シェルで自分の会話の ID を読み（PowerShell は `$env:CODEX_THREAD_ID`、ほかは `echo $CODEX_THREAD_ID`）、`set_session_name`（threadId にその ID、name `<リポジトリ名> Manager`）。ID が空、または失敗したら飛ばす（利用者には言わない）
    - Claude Code: Claude のデスクトップアプリでは、遅延ツール `mcp__ccd_session_mgmt__set_session_title`・`mcp__ccd_sidebar__set_pinned`・`mcp__ccd_session_mgmt__get_session` を ToolSearch（`select:mcp__ccd_session_mgmt__set_session_title,mcp__ccd_sidebar__set_pinned,mcp__ccd_session_mgmt__get_session`）でまとめて読み込み、`set_session_title` を session_id `self`・title `<リポジトリ名> Manager` で呼ぶ（利用者には言わない）。この道具が無い（ターミナルの Claude Code）か失敗したときだけ、最初の返事に一行「このセッションの名前を変えるには `/rename <リポジトリ名> Manager` と入力してください」と添える（`<リポジトリ名>` は実際の名前に置き換える）
    - 監視役のピン止め（Claude のデスクトップアプリだけ）: 続けて `mcp__ccd_sidebar__set_pinned`（session_id `self`、pinned true）で、この会話をサイドバーにピン止めする（利用者には言わない）。名前がもう付いていて上の名前の変更を飛ばしたときも、同じ ToolSearch で読み込んでピン止めする（もうピン止めされていても、そのまま呼んでよい）。道具が無い（ターミナルの Claude Code・Codex）か失敗したら飛ばす（利用者には言わない）。ここで読み込んだ `set_pinned` は、2. の「Claude のデスクトップアプリで起こす」の 3 で作業の会話のピン止めにも使う
-   - 前の監視役のピン止めを外す（Claude のデスクトップアプリだけ）: `mcp__ccd_session_mgmt__get_session`（session_id `self`）で自分の会話の id を読む。1. の 1 で `handoff.md` から読んだ監視役の会話の id が自分と違えば、`set_pinned`（session_id にその id、pinned false）で前の監視役のピン止めを外す（新しい会話で続けるたびに、ピン止めした監視役がたまらないように。ピン止めした会話は自動のアーカイブからも外れる）。前の監視役がまだ動いている（`get_session` でその id を読んで、ターンの途中）ときは外さない。`handoff.md` に id が無い・同じ id・失敗した（利用者が断ったときも）ときは飛ばす（利用者には言わない）。そのあと、`handoff.md` の監視役の会話の id を自分の id にする（`handoff.md` が無ければ、この項目だけで作る。作業の会話を起こさずに終わっても、次の監視役が外せるように）
+   - 前の監視役のピン止めを外す（Claude のデスクトップアプリだけ）: `mcp__ccd_session_mgmt__get_session`（session_id `self`）で自分の会話の id を読む。1. の 1 で `handoff.md` の「監視役の会話」から読んだ、自分と同じリポジトリ名の行の id が自分と違えば、`get_session` でその id を読み、題名が自分と同じ `<リポジトリ名> Manager` で、ターンの途中でないときだけ、`set_pinned`（session_id にその id、pinned false）で前の監視役のピン止めを外す（新しい会話で続けるたびに、ピン止めした監視役がたまらないように。ピン止めした会話は自動のアーカイブからも外れる）。ほかのリポジトリの行の会話は、まだ使っている別の監視役なので外さない。自分のリポジトリの行が無い・同じ id・題名が違う（利用者が名前を変えた）・失敗した（利用者が断ったときも）ときは飛ばす（利用者には言わない）。そのあと、`handoff.md` の「監視役の会話」の自分のリポジトリの行だけを自分の id にする（ほかのリポジトリの行と、ほかの中身はそのまま残す。`handoff.md` が無ければ、この項目だけで作る。作業の会話を起こさずに終わっても、次の監視役が外せるように）
    - 自分のピン止めは、監視役が自分では外さない（9. の最後の報告で全部終わったとき・「監視をやめて」のときも外さない。次の依頼でまた同じ会話を使えるように）。利用者に「ピン止めを外して」と頼まれたときだけ、pinned false で外す
 3. `get_usage` で利用枠・空きメモリ・CPU・動いている数・`launcher` を見る。`list_sessions`（scope=managed）で前回から続く会話と TODO（`todos`）を見る
    - `launcher` が `app` なら、デスクトップアプリの道具を ToolSearch でまとめて読み込む（`select:mcp__ccd_session__start_session,mcp__ccd_session__dismiss_task,mcp__ccd_session_mgmt__list_sessions,mcp__ccd_session_mgmt__list_events,mcp__ccd_session_mgmt__stop_session,mcp__ccd_session_mgmt__get_usage,SendMessage`。`set_pinned` は 2. で読み込み済み。利用者には言わない）。見回りは 4. の「A. Claude のデスクトップアプリ」の形にする
@@ -186,7 +186,7 @@ Claude Code の作業の会話は、監視役が Claude のデスクトップア
 次の順にして、`wait_events` は呼ばずにターンを終える。
 
 1. 状態のフォルダに `handoff.md`（引き継ぎメモ）を書く（前のものは書き換える）。中身:
-   - 監視役の会話: この会話の id（Claude のデスクトップアプリだけ。1. の 2 の `get_session`（self）で読んだもの。次の監視役が前のピン止めを外すのに使う）
+   - 監視役の会話: リポジトリごとに1行、`- <リポジトリ名>: <会話の id>`（Claude のデスクトップアプリだけ。自分の行は 1. の 2 の `get_session`（self）で読んだ id。次の監視役が前のピン止めを外すのに使う）。`handoff.md` は状態のフォルダに1つでリポジトリをまたいで共通なので、ほかのリポジトリの行は消さずにそのまま書き写す
    - 管理中の会話: 名前・状態・ブランチ・PR・待っていること（`waiting` と `list_sessions` から）
    - 決めたこと: 利用者の答え・方針（後の質問に同じ型で答えるため）
    - 次にやること: 返事が来たら誰に何を送るか、最後の報告に残っていること
@@ -255,7 +255,7 @@ Claude Code の作業の会話は、監視役が Claude のデスクトップア
 - 表: 会話の名前・結果（ブランチ・PR・残り）
 - 判断待ち・利用者が確かめること
 - 済んでいない TODO: 番号・やること・条件（そろっているか）
-- `handoff.md` があれば、終わったこと（この表）と監視役の会話の id だけの内容に書き換える（次に始めたときに古い待ちを続けないため）
+- `handoff.md` があれば、終わったこと（この表）と「監視役の会話」（ほかのリポジトリの行も残す）だけの内容に書き換える（次に始めたときに古い待ちを続けないため）
 - worktree の片付けを聞く（消すのは利用者の返事のあと）。デスクトップアプリの会話は、アーカイブ（`mcp__ccd_session_mgmt__archive_session`）すると worktree も片付く。アーカイブは利用者の返事のあとに、終わった会話だけ
 - 監視役の会話のピン止めは、ここでも外さない（1. の 2）
 
