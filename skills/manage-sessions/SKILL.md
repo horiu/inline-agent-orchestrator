@@ -161,7 +161,7 @@ Claude Code の作業の会話は、監視役が Claude のデスクトップア
 | `memoryLow` | 新しく起こさない。重い処理をしている会話へ「区切りで待って」と `send_message` |
 | `usageHigh` | 7. |
 | `usageRecovered` | 7. の再開 |
-| `roomAvailable` | 資源待ちの仕事（`todos` の番号・`names`）を、`get_usage` で `canStartNew` を確かめてから、その TODO の `start` の値に `todo`（番号）を付けて起こす（2.）。利用者には起こしたことを一言 |
+| `roomAvailable` | 資源待ちの仕事（`todos` の番号・`names`）を、`get_usage` で `canStartNew` を確かめてから、`starts` の値（その TODO の `start`）に `todo`（番号）を付けて起こす（2.）。利用者には起こしたことを一言 |
 | `todoDue` | 条件がそろった TODO（`todos`）。10. のとおり、`auto` が false なら利用者に聞き、true なら聞かずに進めて一言伝える |
 
 - デスクトップアプリの会話が長く動いたまま報告が無いときは `list_events` で読む
@@ -278,6 +278,8 @@ Claude Code の作業の会話は、監視役が Claude のデスクトップア
 - 「2番を始めて」「それやって」で始める。`threadId` がある TODO は、その会話へ続きを頼む（`send_message`。デスクトップアプリの会話は `SendMessage` の後に `update_session` で status `running`）。無いものは、text（と `start`）を依頼の文にして `start_session` に `todo`（番号）を付けて起こす（2.）。どちらでも TODO は進行中になり、会話が `done` になると自動で済む（`update_session` が `todosDone` で返す）
 - 知らせで起きたターンで Claude のデスクトップアプリの会話を起こすときは、2. のとおりカードで提案する
 - 会話にしないもの（確かめるだけ・利用者がやること）は、済んだら `todo`（done）。間違えて足したものは `todo`（remove）
+- 終わる前に会話を管理から外すと（`update_session` の remove）、つないだ TODO は会話から外れて、まだの TODO に戻る（`todosReopened`）
+- 条件 `restart` は、足した会話でしか確かめられない（ほかの会話では `due` が null）
 
 ## status line を元に戻す（Claude Code）
 

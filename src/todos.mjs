@@ -16,7 +16,6 @@ import { compareVersions } from './version.mjs';
 // at: date and time. room: free memory and CPU (and the usage limit, when
 // pauseAtPct is set) allow a new session.
 export const TODO_WHEN = ['anytime', 'usage', 'pr', 'version', 'restart', 'at', 'room'];
-export const TODO_STATUSES = ['open', 'started', 'done'];
 
 // Records from before 0.9.0 that were TODOs: work waiting for room
 // (`wait:<name>`, pending with waitForRoom) and app sessions proposed as a
@@ -42,7 +41,7 @@ export function migrateLegacy(s, nowIso) {
       ...(t.cwd ? { cwd: t.cwd } : {}),
       start,
       note: t.note ?? null,
-      createdAt: t.waitSince && t.waitSince !== 'x' ? t.waitSince : t.updatedAt ?? nowIso,
+      createdAt: Number.isFinite(Date.parse(t.waitSince ?? '')) ? t.waitSince : t.updatedAt ?? nowIso,
       ...(t.waitSince ? { waitSince: t.waitSince } : {}),
       ...(card ? { cardAt: t.updatedAt ?? nowIso } : {}),
     });
@@ -93,6 +92,10 @@ export async function checkTodo(todo, ctx) {
       return { due: ctx.now() >= at, detail: null };
     }
     case 'restart': {
+      // Every conversation starts its own server, so only the conversation
+      // that added the TODO can tell that it was started again.
+      if (todo.addedIn && ctx.conversation !== todo.addedIn)
+        return { due: null, detail: '足した会話とは別の会話からは分からない（足した会話で確かめるか、利用者に聞く）' };
       const added = Date.parse(todo.createdAt ?? '');
       return { due: Number.isFinite(added) && ctx.startedAt > added, detail: null };
     }

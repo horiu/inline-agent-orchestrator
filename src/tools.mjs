@@ -79,8 +79,9 @@ export function createTools({ backend, client, store, sys = {} }) {
   const watchReports = sys.watchReports ?? ((onChange) => store.watchReports(onChange));
   // gh (GitHub CLI) for TODOs that wait for a PR to be merged.
   const gh = sys.gh ?? ((args, opts) => runClaude('gh', args, opts));
-  // This server's start, for TODOs that wait for a restart.
+  // This server's start and its conversation, for TODOs that wait for a restart.
   const startedAt = sys.startedAt ?? now();
+  const conversationId = env.CLAUDE_CODE_SESSION_ID ?? env.CODEX_THREAD_ID ?? null;
   // Where Claude Code workers start by default: app sessions when this
   // manager runs in the desktop app, background sessions (claude --bg) in a
   // terminal.
@@ -163,8 +164,7 @@ export function createTools({ backend, client, store, sys = {} }) {
   // conversation does not give it again; returning notified false records it.
   function noticeOnce(version) {
     if (!version.reloadNeeded && !version.updateAvailable) return { ...version, notified: false };
-    const conversation = env.CLAUDE_CODE_SESSION_ID ?? env.CODEX_THREAD_ID ?? `pid:${process.pid}`;
-    const key = [conversation, version.running, version.installed, version.latest].join('|');
+    const key = [conversationId ?? `pid:${process.pid}`, version.running, version.installed, version.latest].join('|');
     const s = store.state();
     const given = Array.isArray(s.versionNotices) ? s.versionNotices : [];
     if (given.includes(key)) return { ...version, notified: true };
@@ -174,11 +174,12 @@ export function createTools({ backend, client, store, sys = {} }) {
   }
 
   // Records of older versions that are TODOs now move on the first read
-  // (see migrateLegacy).
-  function loadState() {
+  // (see migrateLegacy). Readers that other conversations call (list_sessions
+  // for the status command) move them only in what they return, so they never
+  // write state.json under the manager.
+  function loadState({ save = true } = {}) {
     const s = store.state();
-    if (migrateLegacy(s, new Date(now()).toISOString())) store.saveState(s);
-    if (!Array.isArray(s.todos)) s.todos = [];
+    if (migrateLegacy(s, new Date(now()).toISOString()) && save) store.saveState(s);
     return s;
   }
 
@@ -204,6 +205,7 @@ export function createTools({ backend, client, store, sys = {} }) {
       now,
       running: sys.running ?? null,
       startedAt,
+      conversation: conversationId,
       async usage() {
         if (usage === undefined) usage = await be.usage().catch(() => null);
         return usage;
@@ -241,13 +243,16 @@ export function createTools({ backend, client, store, sys = {} }) {
   }
 
   // The TODOs of a session move on with it: started when it works again
-  // (status "started"), done when it is done (status "done").
+  // (status "started"), done when it is done (status "done"), and open again,
+  // without the session, when the session leaves the records (status "open").
+  const MOVES_FROM = { started: ['open'], done: ['open', 'started'], open: ['started'] };
   function moveTodos(threadId, status) {
     const s = loadState();
-    const moved = s.todos.filter((td) => td.threadId === threadId && (status === 'done' ? td.status !== 'done' : td.status === 'open'));
+    const moved = s.todos.filter((td) => td.threadId === threadId && MOVES_FROM[status].includes(td.status));
     if (!moved.length) return [];
     const at = new Date(now()).toISOString();
-    for (const td of moved) Object.assign(td, { status, updatedAt: at, ...(status === 'done' ? { doneAt: at } : {}) });
+    for (const td of moved)
+      Object.assign(td, { status, updatedAt: at, ...(status === 'done' ? { doneAt: at } : {}), ...(status === 'open' ? { threadId: null } : {}) });
     store.saveState(s);
     return moved.map((td) => td.id);
   }
@@ -260,12 +265,16 @@ export function createTools({ backend, client, store, sys = {} }) {
   }
 
   // Work refused for lack of room is kept as a TODO that waits for room
-  // (auto: the user already asked for it). A TODO being started is kept and
-  // waits again from now, so roomAvailable comes once more.
+  // (auto: the user already asked for it). A TODO being started, or one
+  // already waiting for room under the same name (the same work asked again),
+  // is kept and waits again from now, so roomAvailable comes once more.
   function keepForRoom(todoId, { name, prompt, cwd, start }) {
     const s = loadState();
     const at = new Date(now()).toISOString();
-    const known = todoId === undefined ? null : s.todos.find((td) => td.id === todoId);
+    const known =
+      todoId === undefined
+        ? s.todos.find((td) => td.status === 'open' && td.when?.type === 'room' && td.start?.name === name)
+        : s.todos.find((td) => td.id === todoId);
     if (known) {
       Object.assign(known, { status: 'open', when: { type: 'room' }, start: { ...(known.start ?? {}), ...start }, waitSince: at, updatedAt: at });
       store.saveState(s);
@@ -360,13 +369,15 @@ export function createTools({ backend, client, store, sys = {} }) {
   // Load guard: free memory, CPU (when maxCpuPct is set) and usage limits
   // (when pauseAtPct is set for this agent). The number of running
   // conversations is reported but does not limit anything.
-  async function guard({ app = launcher === 'app' } = {}) {
+  // live false skips reading the sessions (running is then null), for callers
+  // that only need canStartNew and have read them already.
+  async function guard({ app = launcher === 'app', live: readLive = true } = {}) {
     const cfg = store.config();
     const pauseAt = pauseAtFor(cfg, app);
     const maxCpu = typeof cfg.maxCpuPct === 'number' ? cfg.maxCpuPct : null;
     const state = store.state();
-    const live = await liveStatuses(watchedIds(state), state.targets);
-    const running = Object.values(live).filter((s) => s.status === 'active').length;
+    const live = readLive ? await liveStatuses(watchedIds(state), state.targets) : {};
+    const running = readLive ? Object.values(live).filter((s) => s.status === 'active').length : null;
     const freeGb = mem.free() / GB;
     const cpu = maxCpu === null ? null : await cpuPct();
     const reasons = [];
@@ -421,7 +432,7 @@ export function createTools({ backend, client, store, sys = {} }) {
         },
       },
       async handler({ scope = 'managed', cwd, limit = 30, includeArchived = false }) {
-        const state = loadState();
+        const state = loadState({ save: false });
         if (scope === 'managed') {
           const sessions = [];
           for (const [id, target] of Object.entries(state.targets)) {
@@ -440,7 +451,7 @@ export function createTools({ backend, client, store, sys = {} }) {
           const rooms = new Map();
           const room = (td) => {
             const app = !usageForTodo(td);
-            if (!rooms.has(app)) rooms.set(app, guard({ app }).then((g) => g.canStartNew));
+            if (!rooms.has(app)) rooms.set(app, guard({ app, live: false }).then((g) => g.canStartNew));
             return rooms.get(app);
           };
           const ctx = todoContext(room);
@@ -756,7 +767,9 @@ export function createTools({ backend, client, store, sys = {} }) {
           const existed = Boolean(s.targets[threadId]);
           delete s.targets[threadId];
           store.saveState(s);
-          return { threadId, removed: existed };
+          // Work that was not done goes back to the TODO list.
+          const todosReopened = moveTodos(threadId, 'open');
+          return { threadId, removed: existed, ...(todosReopened.length ? { todosReopened } : {}) };
         }
         const clean = Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined));
         // A newly added app session counts as working, so the watch reports
@@ -817,10 +830,14 @@ export function createTools({ backend, client, store, sys = {} }) {
           if (!TODO_WHEN.includes(when?.type)) throw new ToolError(`when.type は ${TODO_WHEN.join(' / ')} のどれか`);
           if (when.type === 'pr' && !Number.isInteger(when.pr)) throw new ToolError('when.type pr には pr（PR の番号）が要る');
           if (when.type === 'at' && !Number.isFinite(Date.parse(when.at ?? ''))) throw new ToolError('when.type at には at（日時）が要る');
+          if (when.at !== undefined && !Number.isFinite(Date.parse(when.at))) throw new ToolError(`at（${when.at}）を日時として読めない。ISO 8601 で書く（例 2026-10-23T09:00:00+09:00）`);
         }
         const clean = Object.fromEntries(Object.entries(fields).filter(([, v]) => v !== undefined));
+        // gh would otherwise read the PR of whatever repository this server runs in.
+        const prWithoutRepo = (cwd) => when?.type === 'pr' && !when.repo && !cwd;
         if (action === 'add') {
           if (!clean.text) throw new ToolError('text（やること）が要る');
+          if (prWithoutRepo(clean.cwd)) throw new ToolError('when.type pr には、cwd（リポジトリのフォルダ）か when.repo（owner/name）が要る');
           const todoId = nextTodoId(s);
           const td = {
             id: todoId,
@@ -832,6 +849,8 @@ export function createTools({ backend, client, store, sys = {} }) {
             // when a message is sent to the session.
             status: 'open',
             fromVersion: sys.running ?? null,
+            // A restart is seen only from the conversation that added it.
+            addedIn: conversationId,
             createdAt: at,
             updatedAt: at,
           };
@@ -851,6 +870,7 @@ export function createTools({ backend, client, store, sys = {} }) {
         }
         if (action === 'done') Object.assign(td, { status: 'done', doneAt: at, ...(clean.note ? { note: clean.note } : {}) });
         else {
+          if (prWithoutRepo(clean.cwd ?? td.cwd)) throw new ToolError('when.type pr には、cwd（リポジトリのフォルダ）か when.repo（owner/name）が要る');
           Object.assign(td, clean);
           // A new condition is checked again, and asked about again.
           if (when !== undefined) Object.assign(td, { when, dueNotifiedAt: null, waitSince: when.type === 'room' ? at : td.waitSince });
@@ -1105,6 +1125,8 @@ export function createTools({ backend, client, store, sys = {} }) {
                 events.push({
                   type: 'roomAvailable',
                   todos: ready.map((td) => td.id),
+                  // What to pass to start_session (with todo) for each.
+                  starts: ready.map((td) => td.start ?? null),
                   names: ready.map((td) => td.start?.name ?? td.text),
                   freeMemGb: Number(freeGb.toFixed(2)),
                   cpuPct: cpu,

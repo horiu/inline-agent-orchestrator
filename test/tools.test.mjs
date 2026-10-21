@@ -612,13 +612,15 @@ test('work waiting for memory or CPU keeps the watch going and is reported once 
   assert.equal(busyRound.timedOut, true);
   busy = 20;
   const r = await t.wait_events.handler({});
-  assert.deepEqual(r.events.map((e) => [e.type, e.todos, e.names, e.cpuPct]), [['roomAvailable', [refused.todo], ['次'], 20]]);
+  assert.deepEqual(r.events.map((e) => [e.type, e.todos, e.names, e.cpuPct, e.starts[0].prompt]), [['roomAvailable', [refused.todo], ['次'], 20, '依頼の要点']]);
   assert.equal((await t.wait_events.handler({})).timedOut, true, 'reported once');
   // Refused again when starting it: the same TODO waits anew and is reported again.
   busy = 95;
   clock += 1000;
   const again = await t.start_session.handler({ name: '次', cwd: '/r', prompt: '依頼の要点', todo: refused.todo });
   assert.equal(again.todo, refused.todo);
+  // The same work asked again without its number waits in the same TODO.
+  assert.equal((await t.start_session.handler({ name: '次', cwd: '/r', prompt: '依頼の要点' })).todo, refused.todo);
   assert.equal(store.state().todos.length, 1);
   busy = 20;
   assert.equal((await t.wait_events.handler({})).events[0]?.type, 'roomAvailable');
@@ -645,6 +647,9 @@ test('records of older versions waiting for room or proposed as a card move into
       [2, '「カード」を起こす（デスクトップアプリのカードで提案）', 'anytime', 'カード', null, true],
     ],
   );
+  // list_sessions may run in another conversation: it does not write.
+  assert.deepEqual(Object.keys(store.state().targets).sort(), ['card:カード', 'p', 'wait:次']);
+  await tools.wait_events.handler({ wait: false });
   assert.deepEqual(Object.keys(store.state().targets), ['p']);
   assert.equal(store.state().nextTodoId, 3);
 });
@@ -988,7 +993,7 @@ test('a usage-paused session whose recovery was reported no longer holds off the
 
 // Tools with what the TODO conditions read: the version of this tool, when
 // this server started, and gh (prs: PR number -> state).
-function todoTools({ running = '0.9.0', startedAt = 0, prs = {}, ghCalls = [] } = {}) {
+function todoTools({ running = '0.9.0', startedAt = 0, prs = {}, ghCalls = [], env = { CLAUDE_CODE_SESSION_ID: 'manager' } } = {}) {
   return createTools({
     client: new AppServerClient({ connector: fake.connector() }),
     store,
@@ -1000,6 +1005,7 @@ function todoTools({ running = '0.9.0', startedAt = 0, prs = {}, ghCalls = [] } 
       cpus: idleCpus,
       running,
       startedAt,
+      env,
       gh: async (args, opts) => {
         ghCalls.push({ args, cwd: opts?.cwd });
         const state = prs[args[2]];
@@ -1027,6 +1033,10 @@ test('todo: add, update, done and remove; numbers are not used again', async () 
   await assert.rejects(t.todo.handler({ action: 'add', text: 'x', when: { type: 'pr' } }), /pr（PR の番号）/);
   await assert.rejects(t.todo.handler({ action: 'add', text: 'x', when: { type: 'at', at: 'あした' } }), /at（日時）/);
   await assert.rejects(t.todo.handler({ action: 'add', when: { type: 'anytime' } }), /text/);
+  await assert.rejects(t.todo.handler({ action: 'add', text: 'x', when: { type: 'pr', pr: 7 } }), /cwd（リポジトリのフォルダ）か when.repo/);
+  assert.equal((await t.todo.handler({ action: 'add', text: 'x', when: { type: 'pr', pr: 7, repo: 'horiu/x' } })).todo.when.repo, 'horiu/x');
+  await assert.rejects(t.todo.handler({ action: 'update', id: 3, when: { type: 'pr', pr: 7 } }), /cwd（リポジトリのフォルダ）か when.repo/);
+  await assert.rejects(t.todo.handler({ action: 'add', text: 'x', when: { type: 'usage', at: '5pm' } }), /日時として読めない/);
 });
 
 test('wait_events reports a TODO whose condition is met once, and "anytime" never', async () => {
@@ -1063,6 +1073,11 @@ test('TODOs waiting for a new version or a restart', async () => {
     [true, '新しい版が入ったら'],
     [true, '起動し直したら'],
   ]);
+  // Another conversation (the status command in another chat) cannot tell a restart.
+  const other = todoTools({ running: '0.9.1', startedAt: 2000, env: { CLAUDE_CODE_SESSION_ID: 'other' } });
+  const [, restart] = (await other.list_sessions.handler({})).todos;
+  assert.equal(restart.due, null);
+  assert.match(restart.dueDetail, /足した会話とは別の会話/);
 });
 
 test('a TODO waiting for the usage limit is due when the reset time passes or the usage is back', async () => {
@@ -1106,6 +1121,14 @@ test('a TODO to continue a session starts with a message to it and is done with 
   await t.update_session.handler({ threadId: 'a', status: 'done' });
   assert.equal(store.state().todos[0].status, 'done');
   await assert.rejects(t.update_session.handler({ threadId: 'a', todo: 5 }), /TODO 5 はありません/);
+  // A session that leaves the records before it is done gives its TODO back.
+  await t.todo.handler({ action: 'add', text: '別の仕事' });
+  store.updateTarget('b', { name: 'B', status: 'running' });
+  await t.update_session.handler({ threadId: 'b', todo: 2 });
+  assert.equal(store.state().todos[1].status, 'started');
+  const removed = await t.update_session.handler({ threadId: 'b', remove: true });
+  assert.deepEqual(removed.todosReopened, [2]);
+  assert.deepEqual([store.state().todos[1].status, store.state().todos[1].threadId], ['open', null]);
 });
 
 test('wait_events with wait false returns at once with what is known, never as a timeout or stuck', async () => {
