@@ -570,6 +570,10 @@ const DESKTOP = { CLAUDE_CODE_ENTRYPOINT: 'claude-desktop' };
 const APP_ID = 'local_0b5e1d2c-3f4a-4b5c-8d6e-7f8091a2b3c4';
 const APP_SID = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
 
+// The app session's row in `claude agents --json`.
+const appRow = (sessionId, name, at = 1000, status = 'busy') =>
+  fake.sessions.push({ pid: 9, cwd: '/repo/.claude/worktrees/x', kind: 'interactive', startedAt: clock + at, sessionId, name, status });
+
 // What the manager does with start_session's answer in the desktop app.
 async function startInApp(name, extra = {}) {
   const r = await tools.start_session.handler({ name, cwd: '/repo', prompt: 'やること', ...extra });
@@ -644,6 +648,7 @@ test('an app session that never shows up is notLoaded once the start grace is ov
 test("an app worker's report carries its session ID, which links the record", async () => {
   setup({}, DESKTOP);
   await startInApp('報告する');
+  appRow(APP_SID, '報告する');
   // The worker's own server (the plugin's) runs with its session's ID.
   const worker = createTools({ backend, store, sys: { env: { CLAUDE_CODE_SESSION_ID: APP_SID } } }).tools;
   await worker.report.handler({ kind: 'progress', text: '途中', from: '報告する' });
@@ -712,10 +717,43 @@ test('in the desktop app, a usage.json left over from the terminal does not hold
 test('a report under a bound name from another session does not move the binding', async () => {
   setup({}, DESKTOP);
   await startInApp('結びつけ');
+  appRow(APP_SID, '結びつけ');
+  appRow('cccccccc-bbbb-4ccc-8ddd-eeeeeeeeeeee', '結びつけ', 2000);
   const as = (sid) => createTools({ backend, store, sys: { env: { CLAUDE_CODE_SESSION_ID: sid } } }).tools;
   await as(APP_SID).report.handler({ kind: 'progress', text: '本物', from: '結びつけ' });
   await tools.read_reports.handler({});
   await as('cccccccc-bbbb-4ccc-8ddd-eeeeeeeeeeee').report.handler({ kind: 'progress', text: '別の会話', from: '結びつけ' });
   await tools.read_reports.handler({});
   assert.equal(store.state().targets[APP_ID].sessionId, APP_SID);
+});
+
+test('a report from an older session of the same name does not claim a new app record', async () => {
+  setup({}, DESKTOP);
+  appRow('dddddddd-bbbb-4ccc-8ddd-eeeeeeeeeeee', '再起動', -10 * 60 * 1000, 'idle');
+  await startInApp('再起動');
+  const old = createTools({ backend, store, sys: { env: { CLAUDE_CODE_SESSION_ID: 'dddddddd-bbbb-4ccc-8ddd-eeeeeeeeeeee' } } }).tools;
+  await old.report.handler({ kind: 'done', text: '古い', from: '再起動' });
+  await tools.read_reports.handler({});
+  assert.equal(store.state().targets[APP_ID].sessionId, undefined);
+});
+
+test('a bound app session that is no longer listed is not replaced by another session of its title', async () => {
+  setup({}, DESKTOP);
+  await startInApp('消える');
+  store.updateTarget(APP_ID, { sessionId: APP_SID });
+  appRow('eeeeeeee-bbbb-4ccc-8ddd-eeeeeeeeeeee', '消える', 2000);
+  clock += 4 * 60 * 1000;
+  assert.equal((await backend.status(APP_ID, store.state().targets[APP_ID])).status, 'notLoaded');
+});
+
+test('in the desktop app, background workers keep the usage watch', async () => {
+  setup({ pauseAtPct: 50 }, DESKTOP);
+  writeFileSync(join(store.dir, 'usage.json'), JSON.stringify({ updatedAt: new Date(clock).toISOString(), rate_limits: { five_hour: { used_percentage: 70, resets_at: clock / 1000 + 3600 } } }));
+  // Refused by the usage: the result says how it was to start.
+  const refused = await tools.start_session.handler({ name: 'bg', cwd: '/r', prompt: 'p', via: 'bg' });
+  assert.equal(refused.via, 'bg');
+  await tools.update_session.handler({ threadId: 'wait:bg', name: 'bg', status: 'pending', waitForRoom: true, via: 'bg' });
+  await tools.update_session.handler({ threadId: 'wait:app', name: 'app', status: 'pending', waitForRoom: true, via: 'app' });
+  const r = await tools.wait_events.handler({});
+  assert.deepEqual(r.events.map((e) => [e.type, e.names ?? null]), [['usageHigh', null], ['roomAvailable', ['app']]]);
 });

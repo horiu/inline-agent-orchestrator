@@ -97,9 +97,12 @@ export function createTools({ backend, client, store, sys = {} }) {
   // the record to its row in `claude agents` (the app's own ID is different).
   // Only the first one counts: `from` is written by the caller, so a later
   // report under the same name from another session must not move it.
-  function bindReporter(report, threadId) {
+  // The ID must also be an app row of this record's title started after it,
+  // so an old worker of the same name cannot claim a new record.
+  async function bindReporter(report, threadId) {
     const t = threadId ? store.state().targets[threadId] : null;
-    if (t?.via === 'app' && report.sessionId && !t.sessionId) store.updateTarget(threadId, { sessionId: report.sessionId });
+    if (t?.via !== 'app' || !report.sessionId || t.sessionId) return;
+    if (await be.isAppSession?.(report.sessionId, t)) store.updateTarget(threadId, { sessionId: report.sessionId });
   }
 
   // The desktop app draws no status line, so usage.json there can only be
@@ -297,7 +300,7 @@ export function createTools({ backend, client, store, sys = {} }) {
         if (clash) throw new ToolError(`「${name}」は管理中の会話（${clash[0]}）と同じ名前です。別の名前にしてください`);
         if (!force) {
           const g = await guard({ app: be.agent === 'claude' && (via ?? launcher) === 'app' });
-          if (!g.canStartNew) return { started: false, reasons: g.reasons, guard: g };
+          if (!g.canStartNew) return { started: false, reasons: g.reasons, guard: g, ...(be.agent === 'claude' ? { via: via ?? launcher } : {}) };
         }
         const d = cfg.defaults;
         const useModel = run.model ?? d.model ?? null;
@@ -484,7 +487,11 @@ export function createTools({ backend, client, store, sys = {} }) {
           status: { type: 'string', enum: TARGET_STATUSES },
           note: { type: 'string' },
           area: { type: 'string' },
-          via: { type: 'string', enum: ['app'], description: 'app の会話を管理に加えるとき（start_session の record の値）' },
+          via: {
+            type: 'string',
+            enum: ['app', 'bg'],
+            description: 'app: app の会話を管理に加えるとき（start_session の record の値）。資源待ちの記録には、断った start_session が返した via を入れる',
+          },
           cwd: { type: 'string' },
           profile: { type: 'string' },
           model: { type: 'string' },
@@ -535,7 +542,6 @@ export function createTools({ backend, client, store, sys = {} }) {
         const stale = () => myGen !== waitGen || Boolean(signal?.aborted);
         const aborted = signal ? new Promise((r) => signal.addEventListener('abort', r, { once: true })) : null;
         const cfg = store.config();
-        const pauseAt = pauseAtFor(cfg, launcher === 'app');
         const maxMin = Math.min(Math.max(Number(cfg.watchIntervalMin) || DEFAULT_CONFIG.watchIntervalMin, 0), WATCH_INTERVAL_MAX_MIN);
         const limitMin = intervalMin > 0 ? Math.min(intervalMin, maxMin) : maxMin;
         const deadline = now() + limitMin * 60_000;
@@ -547,13 +553,17 @@ export function createTools({ backend, client, store, sys = {} }) {
         const waitingRoom = Object.entries(state.targets)
           .filter(([, t]) => t.status === 'pending' && t.waitForRoom)
           .map(([id]) => id);
+        // In the desktop app the usage counts only for background sessions
+        // (started with via "bg", or before) and work waiting to start as one.
+        const usageFor = (t) => launcher !== 'app' || (t.status === 'pending' ? t.via === 'bg' : t.via !== 'app');
+        const pauseAt = pauseAtFor(cfg, ![...ids, ...waitingRoom].some((id) => usageFor(state.targets[id])));
         const storedSeen = Object.fromEntries(ids.map((id) => [id, JSON.stringify(state.targets[id].lastSeen ?? null)]));
         const events = [];
         let reportsOffset = null;
         const alerts = { memoryLow: false, usageHigh: [], ...(state.alerts ?? {}) };
-        // roomAvailable fires once per set of waiting records; a record put
+        // roomAvailable fires once per set of records with room; a record put
         // back under the same ID later is new work (waitSince differs).
-        const roomKey = waitingRoom.map((id) => `${id}@${state.targets[id].waitSince ?? ''}`).sort().join(',');
+        const roomKey = (list) => list.map((id) => `${id}@${state.targets[id].waitSince ?? ''}`).sort().join(',');
         if (!waitingRoom.length) alerts.roomAvailable = null;
         const byName = namesToIds(state);
         const unsubscribe = be.onEvent((msg) => {
@@ -632,7 +642,7 @@ export function createTools({ backend, client, store, sys = {} }) {
             reportsOffset = peek.nextOffset;
             for (const r of peek.reports) {
               const threadId = r.threadId ?? (r.from ? byName.get(r.from) ?? null : null);
-              bindReporter(r, threadId);
+              await bindReporter(r, threadId);
               events.push({ type: 'report', ...r, threadId });
             }
             const freeGb = mem.free() / GB;
@@ -678,17 +688,19 @@ export function createTools({ backend, client, store, sys = {} }) {
             }
             if (waitingRoom.length) {
               const maxCpu = typeof cfg.maxCpuPct === 'number' ? cfg.maxCpuPct : null;
-              const cpu = !low && !usageBlocked && maxCpu !== null ? await cpuPct() : null;
-              const room = !low && !usageBlocked && (cpu === null || cpu < maxCpu);
-              if (room && alerts.roomAvailable !== roomKey)
+              const ready = low ? [] : waitingRoom.filter((id) => !(usageBlocked && usageFor(state.targets[id])));
+              const cpu = ready.length && maxCpu !== null ? await cpuPct() : null;
+              const room = ready.length > 0 && (cpu === null || cpu < maxCpu);
+              const key = room ? roomKey(ready) : null;
+              if (room && alerts.roomAvailable !== key)
                 events.push({
                   type: 'roomAvailable',
-                  threadIds: waitingRoom,
-                  names: waitingRoom.map((id) => state.targets[id]?.name ?? null),
+                  threadIds: ready,
+                  names: ready.map((id) => state.targets[id]?.name ?? null),
                   freeMemGb: Number(freeGb.toFixed(2)),
                   cpuPct: cpu,
                 });
-              alerts.roomAvailable = room ? roomKey : null;
+              alerts.roomAvailable = key;
             }
             if (events.length || now() >= deadline) break;
             const pause = sleep(Math.min(cfg.pollSec * 1000, Math.max(0, deadline - now())));
@@ -722,7 +734,7 @@ export function createTools({ backend, client, store, sys = {} }) {
         const reports = store.readReports({ all, advance: !all });
         if (!all) {
           const byName = namesToIds(store.state());
-          for (const r of reports) bindReporter(r, r.threadId ?? (r.from ? byName.get(r.from) ?? null : null));
+          for (const r of reports) await bindReporter(r, r.threadId ?? (r.from ? byName.get(r.from) ?? null : null));
         }
         return { reports: all ? reports.slice(-limit).reverse() : reports };
       },

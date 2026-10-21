@@ -181,17 +181,24 @@ export function claudeBackend({ store, claudePath = 'claude', permissionMode = '
       if (bySid) return bySid;
     }
     const hit = list.find((e) => e.sessionId === id || e.id === id) ?? null;
-    if (hit || target?.via !== 'app') return hit;
+    // A bound app session that is not listed has stopped; another session
+    // of the same title must not stand in for it.
+    if (hit || target?.via !== 'app' || target.sessionId) return hit;
     // Until its first report gives the session ID, an app session is found
     // by its title (the name it was started with), started after the record.
     // The match is not kept: a terminal or VS Code session of the same title
     // is an interactive row too and must not take the record over.
+    return appRows(list, target)[0] ?? null;
+  }
+
+  // Interactive rows that may be the app session of a record: its title (or
+  // an old one), started after the record, newest first.
+  function appRows(list, target) {
     const since = Date.parse(target.startedAt ?? '') - 60_000;
-    return (
-      list
-        .filter((e) => e.kind === 'interactive' && e.name === target.name && !(e.startedAt < since))
-        .sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0))[0] ?? null
-    );
+    const names = new Set([target.name, ...(target.aliases ?? [])]);
+    return list
+      .filter((e) => e.kind === 'interactive' && names.has(e.name) && !(e.startedAt < since))
+      .sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0));
   }
 
   // A just-started app session that is not listed yet counts as working.
@@ -306,6 +313,11 @@ export function claudeBackend({ store, claudePath = 'claude', permissionMode = '
     openCommand: (id, target) => (target?.via === 'app' ? `デスクトップ app のサイドバー（ピン止め）の「${target.name}」` : `claude attach ${target?.jobId ?? id}`),
 
     onEvent: () => () => {},
+
+    // Whether a reported session ID belongs to the app session of a record.
+    async isAppSession(sessionId, target) {
+      return appRows(await agents({ fresh: true }), target).some((e) => e.sessionId === sessionId);
+    },
 
     async status(id, target) {
       const entry = find(await agents(), id, target);

@@ -63,7 +63,7 @@ Claude Code の作業の会話は、監視役がデスクトップ app で動い
 - 途中で変えるとき: `send_message` に `profile`（または `effort`・`model`）を付ける。例: debug で1回目に原因が絞れなければ `effort` を xhigh に上げる、設計が終わって実装に入る会話は implement に下げる
   - モデルを変えると、次の1回で会話の全部を新しいモデルで読み直す（そのぶん利用枠を使う）。エフォートだけを変えるのは安い。モデルは途中で何度も変えない
   - Codex では動いている会話には付けられない（ターンが終わってから送る）。Claude Code では、動いていれば預かって届けるときから効く（先に預けてあった連絡も、まとめて新しい設定で届く）
-- 断られたら（`started: false` で `reasons` がある）理由を読む。空きメモリ・CPU・利用枠なら `update_session`（threadId `wait:<名前>`、name、status `pending`、`waitForRoom` true、note に依頼の要点）に残す。見回りは続き、空きメモリ・CPU・利用枠（`pauseAtPct` があるとき）のどれにも余裕ができると `roomAvailable` が返るので、そのとき起こして `wait:<名前>` を外す（remove true）。`force` は利用者が言ったときだけ
+- 断られたら（`started: false` で `reasons` がある）理由を読む。空きメモリ・CPU・利用枠なら `update_session`（threadId `wait:<名前>`、name、status `pending`、`waitForRoom` true、Claude Code では断った結果の `via`、note に依頼の要点）に残す。見回りは続き、空きメモリ・CPU・利用枠（`pauseAtPct` があるとき）のどれにも余裕ができると `roomAvailable` が返るので、そのとき起こして `wait:<名前>` を外す（remove true）。`force` は利用者が言ったときだけ
 - Claude Code で「信頼されていない」と返ったら、エラーの文のとおり利用者に承認を頼む。信頼の設定は安全にかかわるので、監視役が `~/.claude.json` を書き換えて済ませない。利用者がリモートからで承認できないときは、信頼済みのリポジトリで進めるか、この会話で直接作業するかを聞く
 - 起こしたら利用者へ一言: 名前と開き方（結果の `open`）
 
