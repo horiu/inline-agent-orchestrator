@@ -322,7 +322,7 @@ test('usage comes from usage.json written by the status line; stale data is flag
   assert.equal(u.pauseAtPct, 95);
   assert.match(u.usage.error, /status line/);
   assert.match(u.usage.error, /setup.mjs" statusline/);
-  assert.match(u.usage.error, /デスクトップ app では描かれず/);
+  assert.match(u.usage.error, /Claude のデスクトップアプリでは描かれず/);
   assert.ok(recordUsage({ rate_limits: { five_hour: { used_percentage: 96.4, resets_at: 1_800_000_100 }, seven_day: { used_percentage: 41.2, resets_at: 1_800_500_000 } } }, store.dir, new Date(clock)));
   u = await tools.get_usage.handler({});
   assert.deepEqual(u.usage.windows.map((w) => [w.window, w.usedPercent]), [['5h', 96.4], ['weekly', 41.2]]);

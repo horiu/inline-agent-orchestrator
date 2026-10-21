@@ -17,6 +17,8 @@ const ACTIVE_TARGET = new Set(['running', 'waiting_user', 'paused', 'paused_usag
 const WAITS_FOR_USER = { waitingOnApproval: 'approval', waitingOnUserInput: 'input' };
 const QUESTION_CHARS = 300;
 const QUESTIONS_KEPT = 3;
+// Version notices already given (conversation and versions), newest last.
+const NOTICES_KEPT = 50;
 // A stuck count saved longer ago than this is from a watch that is no longer
 // running (the manager was closed or stopped): a new watch starts over.
 const STUCK_GAP_MS = 10 * 60_000;
@@ -27,9 +29,9 @@ const CPU_SAMPLE_MS = 1000;
 // by the manager model with the app's own tools (mcp__ccd_*), which this
 // server cannot call; it only keeps their record and watches them.
 const APP_HINT = {
-  read: 'app の会話は mcp__ccd_session_mgmt__list_events（session_id にこの ID）で読む',
-  send: 'app の会話へは SendMessage（to にこの ID）で送る（動いていれば app が預かり、今のターンの後に届ける）。モデル・エフォートを変えるときは mcp__ccd_session_mgmt__set_session_model・set_session_effort',
-  stop: 'app の会話は mcp__ccd_session_mgmt__stop_session で止めてから、update_session で状態（例 paused）を記録する',
+  read: 'デスクトップアプリの会話は mcp__ccd_session_mgmt__list_events（session_id にこの ID）で読む',
+  send: 'デスクトップアプリの会話へは SendMessage（to にこの ID）で送る（動いていればデスクトップアプリが預かり、今のターンの後に届ける）。モデル・エフォートを変えるときは mcp__ccd_session_mgmt__set_session_model・set_session_effort',
+  stop: 'デスクトップアプリの会話は mcp__ccd_session_mgmt__stop_session で止めてから、update_session で状態（例 paused）を記録する',
 };
 
 export function workerInstructions(name, agent = 'codex', { app = false } = {}) {
@@ -142,6 +144,21 @@ export function createTools({ backend, client, store, sys = {} }) {
       });
     }
     return out;
+  }
+
+  // A version notice goes to the user once per conversation and combination
+  // of versions. It is kept in state.json, so a compacted or resumed
+  // conversation does not give it again; returning notified false records it.
+  function noticeOnce(version) {
+    if (!version.reloadNeeded && !version.updateAvailable) return { ...version, notified: false };
+    const conversation = env.CLAUDE_CODE_SESSION_ID ?? env.CODEX_THREAD_ID ?? `pid:${process.pid}`;
+    const key = [conversation, version.running, version.installed, version.latest].join('|');
+    const s = store.state();
+    const given = Array.isArray(s.versionNotices) ? s.versionNotices : [];
+    if (given.includes(key)) return { ...version, notified: true };
+    s.versionNotices = [...given, key].slice(-NOTICES_KEPT);
+    store.saveState(s);
+    return { ...version, notified: false };
   }
 
   function appOnly(threadId, what) {
@@ -322,7 +339,7 @@ export function createTools({ backend, client, store, sys = {} }) {
 
     start_session: {
       description:
-        '新しい作業の会話を起こして、最初の依頼を送る（名前・作業フォルダ・モデル・エフォート）。モデルとエフォートは、仕事の種類に合う profile（get_usage の profiles）で選ぶのが基本。model・effort を書くと profile より優先する。会話はこの会話とは別に動き、この会話が終わっても動き続ける。空きメモリ・CPU・利用枠（pauseAtPct があるとき）に余裕が無いときは起こさずに理由を返す（force=true で無視）。名前は管理中の会話と重ねない。Claude Code の via="app"（デスクトップ app での既定）では、この道具は起こさずに、app の mcp__ccd_session__start_session に渡す値（appStart）と、起こした後に update_session に渡す値（record）を返す（startInApp=true）。',
+        '新しい作業の会話を起こして、最初の依頼を送る（名前・作業フォルダ・モデル・エフォート）。モデルとエフォートは、仕事の種類に合う profile（get_usage の profiles）で選ぶのが基本。model・effort を書くと profile より優先する。会話はこの会話とは別に動き、この会話が終わっても動き続ける。空きメモリ・CPU・利用枠（pauseAtPct があるとき）に余裕が無いときは起こさずに理由を返す（force=true で無視）。名前は管理中の会話と重ねない。Claude Code の via="app"（Claude のデスクトップアプリでの既定）では、この道具は起こさずに、デスクトップアプリの mcp__ccd_session__start_session に渡す値（appStart）と、起こした後に update_session に渡す値（record）を返す（startInApp=true）。',
       inputSchema: {
         type: 'object',
         required: ['name', 'cwd', 'prompt'],
@@ -344,7 +361,7 @@ export function createTools({ backend, client, store, sys = {} }) {
           via: {
             type: 'string',
             enum: ['app', 'bg'],
-            description: 'Claude Code だけ: app＝デスクトップ app の会話（サイドバーに出てピン止めできる）、bg＝claude --bg。省略時は監視役がデスクトップ app なら app、ターミナルなら bg',
+            description: 'Claude Code だけ: app＝Claude のデスクトップアプリの会話（サイドバーに出てピン止めできる）、bg＝claude --bg。省略時は監視役が Claude のデスクトップアプリなら app、ターミナルなら bg',
           },
           force: { type: 'boolean', default: false },
         },
@@ -523,7 +540,7 @@ export function createTools({ backend, client, store, sys = {} }) {
         const target = store.state().targets[threadId];
         const res =
           target?.via === 'app'
-            ? { renamed: false, note: 'app の会話の題名は mcp__ccd_session_mgmt__set_session_title で変える（ここでは監視役の記録だけを変えた）' }
+            ? { renamed: false, note: 'デスクトップアプリの会話の題名は mcp__ccd_session_mgmt__set_session_title で変える（ここでは監視役の記録だけを変えた）' }
             : await be.rename(threadId, name, target);
         // Keep old names so reports written under them still match.
         if (target) store.updateTarget(threadId, { name, aliases: [...new Set([...(target.aliases ?? []), target.name])] });
@@ -533,17 +550,21 @@ export function createTools({ backend, client, store, sys = {} }) {
 
     get_usage: {
       description:
-        '利用枠（窓ごとの使用率とリセットの時刻）・空きメモリ・動いている会話の数と、いま新しく動かしてよいか（canStartNew と理由）を返す。pauseAtPct が null なら利用枠では止めない（読めなくてもよい）。profiles は仕事の種類ごとのおすすめのモデルとエフォート（null は、start_session ではそれぞれの既定、send_message では今の値のまま）。',
+        '利用枠（窓ごとの使用率とリセットの時刻）・空きメモリ・動いている会話の数と、いま新しく動かしてよいか（canStartNew と理由）を返す。pauseAtPct が null なら利用枠では止めない（読めなくてもよい）。profiles は仕事の種類ごとのおすすめのモデルとエフォート（null は、start_session ではそれぞれの既定、send_message では今の値のまま）。version はこの道具の版: running（動いている版）・installed（ディスクに入っている版。プラグインとして入れていなければ null）・autoUpdate（自動更新）・latest（自動更新が切れているとき（と Claude のデスクトップアプリ）だけ、GitHub の最新の版。1日1回まで読む）・reloadNeeded（新しい版が入っているのに、この会話は古い版のまま）・updateAvailable（新しい版が出ているのに入っていない）・notified（この会話で同じ版の組み合わせをすでに返した。false で返すときに記録するので、reloadNeeded か updateAvailable が true で notified が false なら、そのとき利用者に伝える）。',
+      // Marked read-only for approval prompts: it changes no conversation,
+      // only the manager's own record of version notices given.
       readOnly: true,
       inputSchema: { type: 'object', properties: {} },
       async handler() {
-        return { ...(await guard()), profiles: profileList(store.config()) };
+        // The CPU sample and the version check (which may read GitHub) wait together.
+        const [g, version] = await Promise.all([guard(), sys.version ? sys.version() : null]);
+        return { ...g, profiles: profileList(store.config()), version: version && noticeOnce(version) };
       },
     },
 
     update_session: {
       description:
-        '監視役の記録（state.json）を書き換える。管理に加える（app の会話は start_session が返した record の値で）・状態（running / waiting_user / done / pending=保留 / paused=手で止めた / paused_usage=利用枠で止めた / failed）・一言のメモ・触る場所。会話そのものには何もしない。',
+        '監視役の記録（state.json）を書き換える。管理に加える（デスクトップアプリの会話は start_session が返した record の値で）・状態（running / waiting_user / done / pending=保留 / paused=手で止めた / paused_usage=利用枠で止めた / failed）・一言のメモ・触る場所。会話そのものには何もしない。',
       inputSchema: {
         type: 'object',
         required: ['threadId'],
@@ -556,7 +577,7 @@ export function createTools({ backend, client, store, sys = {} }) {
           via: {
             type: 'string',
             enum: ['app', 'bg'],
-            description: 'app: app の会話を管理に加えるとき（start_session の record の値）。資源待ちの記録には、断った start_session が返した via を入れる',
+            description: 'app: デスクトップアプリの会話を管理に加えるとき（start_session の record の値）。資源待ちの記録には、断った start_session が返した via を入れる',
           },
           cwd: { type: 'string' },
           profile: { type: 'string' },

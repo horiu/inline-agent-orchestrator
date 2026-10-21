@@ -7,14 +7,14 @@
 Claude Code や Codex で作業を並行して進めるとき、セッションをいくつも開いて、1つずつ様子を見て回っていませんか。Inline Agent Orchestrator を入れると、いつものチャットがまとめ役になります。作業ごとにセッションを立ち上げて進み具合を見守り、判断が必要なことだけをまとめて聞いてきます。画面も操作も、いつもの Claude Code・Codex のままです。
 
 > [!NOTE]
-> 試作版（v0.7.0）です。単体テストは通過していますが、実際の Claude Code・Codex での動作検証はまだ行っていません。ご利用の前に「[動作確認](#動作確認)」の手順をお試しください。
+> 試作版（v0.8.0）です。単体テストは通過していますが、実際の Claude Code・Codex での動作検証はまだ行っていません。ご利用の前に「[動作確認](#動作確認)」の手順をお試しください。
 
 ## 特長
 
 - **いつもの画面のまま** — 専用のアプリや画面はありません。Claude Code・Codex をそのまま使います。tmux や常駐のサービスも要りません
 - **作業ごとにセッションを用意** — 頼んだ内容を作業ごとに分け、それぞれに名前・作業フォルダ・モデルを決めて、別々のセッションで進めます
 - **質問はまとめて、おすすめ付きで** — 各セッションからの「どうしますか？」を集め、選択肢とおすすめを添えて一度に聞きます。返事をすれば、それぞれの作業が続きから進みます
-- **デスクトップアプリのサイドバーに並ぶ** — Claude Code のデスクトップアプリでは、作業セッションがアプリの会話として起動し、オーケストレーターの下に並びます。動いている間はピン留めされ、終わると外れます（[デスクトップアプリで使う](#デスクトップアプリで使う)）
+- **Claude のデスクトップアプリのサイドバーに並ぶ** — Claude のデスクトップアプリでは、作業セッションがデスクトップアプリの会話として起動し、オーケストレーターの下に並びます。動いている間はピン留めされ、終わると外れます（[Claude のデスクトップアプリで使う](#claude-のデスクトップアプリで使う)）
 - **PC と利用枠に無理をさせない** — 同時に動かす数は決めず、空きメモリと CPU に余裕があるかぎり起動します。利用枠の上限に達して止まった作業は、枠が戻ったあとに続きから再開させます（[利用枠の上限](#利用枠の上限)）
 - **止まった作業も立て直す** — エラーで落ちたセッションや、途中で止まったセッションに気づき、続きから進めるよう頼み直します
 - **入れるのは Node.js だけ** — ほかのパッケージを必要とせず、軽く動きます
@@ -58,7 +58,7 @@ Claude Code や Codex で作業を並行して進めるとき、セッション�
 
 マーケットプレイスの追加を確認されたら承認し、続く画面で「Install for you」を選ぶと、そのまま使えるようになります。
 
-デスクトップアプリと VS Code のチャット欄では、このコマンドは使えません。代わりにターミナルで次のコマンドを実行し、アプリを再起動してください（Claude Code 2.1.292 以降）。インストールしたプラグインは、ターミナル・デスクトップアプリ・VS Code のどれからでも使えます。
+Claude のデスクトップアプリと VS Code のチャット欄では、このコマンドは使えません。代わりにターミナルで次のコマンドを実行し、Claude のデスクトップアプリや VS Code を再起動してください（Claude Code 2.1.292 以降）。インストールしたプラグインは、ターミナル・ Claude のデスクトップアプリ・VS Code のどれからでも使えます。
 
 ```bash
 claude plugin install inline-agent-orchestrator --marketplace horiu/inline-agent-orchestrator
@@ -66,7 +66,7 @@ claude plugin install inline-agent-orchestrator --marketplace horiu/inline-agent
 
 VS Code では、チャット欄に `/plugins` と入力して開く画面からもインストールできます。Marketplaces タブで `horiu/inline-agent-orchestrator` を追加し、Plugins タブでインストールします。
 
-Claude Code では、既定で利用枠を読まずに動きます（[利用枠の上限](#利用枠の上限)）。`pauseAtPct` を設定してターミナルで使う場合だけ、使用量を読み取るための status line の設定を求められます。許可すると設定され、現在の status line の表示はそのまま残ります。デスクトップアプリでは status line が表示されないため、設定しても使用量は読み取れません。
+Claude Code では、既定で利用枠を読まずに動きます（[利用枠の上限](#利用枠の上限)）。`pauseAtPct` を設定してターミナルで使う場合だけ、使用量を読み取るための status line の設定を求められます。許可すると設定され、現在の status line の表示はそのまま残ります。Claude のデスクトップアプリでは status line が表示されないため、設定しても使用量は読み取れません。
 
 <details>
 <summary>Claude Code 2.1.257〜2.1.274 をお使いの場合</summary>
@@ -85,7 +85,7 @@ Claude Code では、既定で利用枠を読まずに動きます（[利用枠�
 
 ### Codex
 
-動作環境: Codex CLI 0.162 以降（デスクトップアプリのみを使う場合も必要です）、Node.js 20 以降、git
+動作環境: Codex CLI 0.162 以降（Codex のデスクトップアプリのみを使う場合も必要です）、Node.js 20 以降、git
 
 ターミナルで次のコマンドを順に実行します。
 
@@ -112,18 +112,18 @@ Codex を再起動すれば準備完了です。セットアップスクリプ�
 
 オーケストレーターが作業を分割し、作業用のセッションを起動して監視を始めます。「PR を作成するまで」「調査して報告するまで」のように、どこまで進めるかを添えると、途中で止まらずに進みます。
 
-オーケストレーターのセッションには `<リポジトリ名> Manager`（例: `wakarium Manager`）という名前が付きます。リポジトリ名は作業フォルダの git リポジトリの名前で、worktree の中でも元のリポジトリの名前になります（git の外では作業フォルダの名前）。Claude Code のデスクトップアプリでは自動で付きます。ターミナルの Claude Code では外から名前を変えられないため、案内に従ってチャット欄に `/rename <リポジトリ名> Manager` と入力してください。
+オーケストレーターのセッションには `<リポジトリ名> Manager`（例: `wakarium Manager`）という名前が付きます。リポジトリ名は作業フォルダの git リポジトリの名前で、worktree の中でも元のリポジトリの名前になります（git の外では作業フォルダの名前）。Claude のデスクトップアプリでは自動で付きます。ターミナルの Claude Code では外から名前を変えられないため、案内に従ってチャット欄に `/rename <リポジトリ名> Manager` と入力してください。
 
-### デスクトップアプリで使う
+### Claude のデスクトップアプリで使う
 
-Claude Code のデスクトップアプリ（Code タブ）でオーケストレーターを動かすと、作業セッションはアプリの会話として起動します。
+Claude のデスクトップアプリ（Code タブ）でオーケストレーターを動かすと、作業セッションはデスクトップアプリの会話として起動します。
 
-- **サイドバーに並ぶ** — 作業セッションはオーケストレーターの下に並び、クリックで開いて直接話しかけられます。アプリが作業セッションごとに worktree とブランチを作ります
+- **サイドバーに並ぶ** — 作業セッションはオーケストレーターの下に並び、クリックで開いて直接話しかけられます。Claude のデスクトップアプリが作業セッションごとに worktree とブランチを作ります
 - **動いている間はピン留め** — 管理中で動いている作業セッションはピン留めされ、終わる（done）と外れます。終わったセッションは、最後の報告のあとにアーカイブするか聞かれます（アーカイブすると worktree も片付きます）
-- **リモートから頼んだとき** — Remote Control（スマートフォンや claude.ai）から頼んだときなど、アプリが作業セッションの起動を受け付けない場合は、起動の提案カードを出します。PC のアプリでカードを押すと始まります
-- **利用枠は読みません** — デスクトップアプリでは status line が表示されないため、使用量を理由に止める設定（`pauseAtPct`）は効きません
+- **リモートから頼んだとき** — Remote Control（スマートフォンや claude.ai）から頼んだときなど、Claude のデスクトップアプリが作業セッションの起動を受け付けない場合は、起動の提案カードを出します。PC のデスクトップアプリでカードを押すと始まります
+- **利用枠は読みません** — Claude のデスクトップアプリでは status line が表示されないため、使用量を理由に止める設定（`pauseAtPct`）は効きません
 
-ターミナルの Claude Code では、従来どおり `claude --bg` のバックグラウンドセッションで起動します。デスクトップアプリから `claude --bg` を使う場合（「`via: bg` で起動して」と依頼）は、ターミナルで `claude` を起動して `/login` しておく必要があります（アプリのログインは CLI には効きません）。バックグラウンドセッションはアプリのサイドバーに表示されず、ピン留めもできません。
+ターミナルの Claude Code では、従来どおり `claude --bg` のバックグラウンドセッションで起動します。Claude のデスクトップアプリから `claude --bg` を使う場合（「`via: bg` で起動して」と依頼）は、ターミナルで `claude` を起動して `/login` しておく必要があります（デスクトップアプリのログインは CLI には効きません）。バックグラウンドセッションはデスクトップアプリのサイドバーに表示されず、ピン留めもできません。
 
 ### 実行中
 
@@ -242,7 +242,7 @@ Claude Code のデスクトップアプリ（Code タブ）でオーケストレ
 - **Claude Code（既定: 止めない）** — 上限に達すると作業セッションもオーケストレーターも止まります。オーケストレーターのセッションは、Claude Code の「制限リセット時に自動的に続行する」で再開します。再開後、オーケストレーターは利用制限で止まった作業セッションを見つけて、`git status`・`git diff` を確認して続きから進めるよう依頼します
 - **Codex（既定: 95% で止める）** — 上限で止まった Codex のオーケストレーターがリセット時に自動で再開するかは確認していないため、従来どおり上限の手前で作業セッションを止めます。オーケストレーターには枠が残るので、監視はモデルを使わずに続き、枠が戻ると再開を依頼します
 
-残りの枠を別の作業に使いたいなど、上限の手前で止めたい場合は、`config.json` の `pauseAtPct` に割合を書くか、オーケストレーターに「90% で止めて」のように伝えてください。Claude Code で使用量を読むには status line の設定が必要で、デスクトップアプリでは使えません。
+残りの枠を別の作業に使いたいなど、上限の手前で止めたい場合は、`config.json` の `pauseAtPct` に割合を書くか、オーケストレーターに「90% で止めて」のように伝えてください。Claude Code で使用量を読むには status line の設定が必要で、Claude のデスクトップアプリでは使えません。
 
 以前の `config.example.json` を写した `config.json` には `"pauseAtPct": 95` が残っており、Claude Code でも 95% で止めます。止めない場合は、その行を消すか `{ "claude": null }` に書き換えてください。
 
@@ -250,9 +250,28 @@ Claude Code のデスクトップアプリ（Code タブ）でオーケストレ
 
 ### Claude Code
 
-**更新**: チャット欄に `/plugin` と入力し、Installed タブでこのプラグインを開いて「Update now」を選びます。新しい版は次のセッションから使われます。今のセッションで使うには、チャット欄に `/reload-plugins` と入力します。
+**更新**: ターミナルで起動した Claude Code のチャット欄に `/plugin` と入力し、Installed タブでこのプラグインを開いて「Update now」を選びます。ターミナルでは `claude plugin update inline-agent-orchestrator@inline-agent-orchestrator` でも更新できます。新しい版は次に起動したセッションから使われます。
 
-このプラグインは、標準では自動で更新されません。自動で更新したい場合は、`/plugin` の Marketplaces タブで `inline-agent-orchestrator` を選び、「Enable auto-update」を選びます。
+動いているセッションは、更新したあとも古い版を使い続けます。新しい版に切り替えるには、次のようにします。
+
+- **ターミナルの Claude Code** — チャット欄に `/reload-plugins` と入力するか、Claude Code を起動し直します
+- **Claude のデスクトップアプリ** — Claude のデスクトップアプリを終了して起動し直します。デスクトップアプリの入力欄で `/reload-plugins` を使って、オーケストレーターの MCP サーバーが新しい版に切り替わるかは確かめていません（Claude Code 2.1.304 では、デスクトップアプリから動かす形（SDK）で `/reload-plugins` がターミナル用のコマンドとして扱われ、MCP サーバーを読み直した数が出ません）
+
+デスクトップアプリを終了すると、そこで動いている作業セッションも止まります。作業セッションが動いていないときに切り替えてください。
+
+**新しい版の知らせ**: オーケストレーターは、始めたときと、止まったあと再開するときに版を確かめます。新しい版がディスクに入っているのに、この会話がまだ古い版を使っているときは、上の切り替え方を一言伝えます。GitHub に新しい版が出ているのに入っていないときは、更新するかを聞き、了承すると `claude plugin marketplace update` と `claude plugin update` を実行します。GitHub の版を確かめるのは、自動更新が切れているときと、Claude のデスクトップアプリのとき（下の「自動更新」）で、1日1回まで（読めなかったときは1時間後に読み直す）です。同じ知らせは、同じ版の組み合わせについて1つの会話で1回だけです。データフォルダの `state.json` に記録するので、会話を圧縮したり再開したりしても繰り返しません。
+
+**自動更新**: このプラグインは、標準では自動で更新されません。自動で更新したい場合は、ターミナルで起動した Claude Code の `/plugin` の Marketplaces タブで `inline-agent-orchestrator` を選び、「Enable auto-update」を選びます。自動更新は、会話で最初のメッセージを送ってから10分以内に、新しい版をディスクに入れます。
+
+Claude のデスクトップアプリは Claude Code を `DISABLE_AUTOUPDATER=1` で動かしています。Claude Code の説明書には、この設定があるとプラグインの自動更新も止まる（`FORCE_AUTOUPDATE_PLUGINS=1` を足すと動く）とあります。
+
+ただし、デスクトップアプリだけで自動更新を入れて使っている PC で、次のことがありました。確かめたのはこの1回だけで、どのプロセスが新しい版を入れたかは分かっていません。
+
+- 2026-10-21T21:51:43Z、0.7.0 が main に入った
+- 21:53:45Z、デスクトップアプリで新しい会話が始まった
+- 21:54:51Z（その約1分後）、`installed_plugins.json` の版が 0.7.0 になった。どの会話でも、手で `claude plugin update` は実行していない
+
+このためオーケストレーターは、デスクトップアプリではこの設定を見ずに、`/plugin` の自動更新の設定どおりに `autoUpdate` を返します。そのうえで、自動更新が入っていても動かないときの備えとして、デスクトップアプリでは GitHub の版を1日1回確かめ、新しい版が入っていなければ更新するかを聞きます。ターミナルの Claude Code では説明書どおり、この設定（または `DISABLE_UPDATES`・`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`）があって `FORCE_AUTOUPDATE_PLUGINS=1` が無ければ、自動更新が切れているとみなします。
 
 **アンインストール**: まずチャット欄でオーケストレーターに「status line を元に戻して」と依頼します。続けて、チャット欄に次のコマンドを入力し、開いた画面でアンインストールを確定します。
 
@@ -274,6 +293,8 @@ git -C $HOME/.codex/inline-agent-orchestrator pull
 node $HOME/.codex/inline-agent-orchestrator/src/setup.mjs codex
 ```
 
+オーケストレーターは、`git pull` した版が動いている版より新しいときに Codex の再起動を勧めます。GitHub に新しい版が出ているとき（確かめるのは1日1回まで）は、更新するかを聞きます。
+
 **アンインストール**: ターミナルで次のコマンドを実行し、Codex を再起動します。MCP サーバーの登録とスキルが外れます（変更前の `config.toml` は `config.toml.bak-<日時>` として保存します）。
 
 ```bash
@@ -292,8 +313,8 @@ node $HOME/.codex/inline-agent-orchestrator/src/setup.mjs codex --remove
                  │                              │
           Codex の場合                    Claude Code の場合
      codex app-server（共有デーモン）    claude --bg / agents / logs / stop
-                 │                       （デスクトップアプリでは、起動・指示・ピン留めを
-                 │                         オーケストレーターがアプリのツールで行い、
+                 │                       （Claude のデスクトップアプリでは、起動・指示・ピン留めを
+                 │                         オーケストレーターが Claude のデスクトップアプリのツールで行い、
                  │                         状態は claude agents から読む）
                  │                              │
                  ├── 作業セッション A ── report ──▶ reports.jsonl ──▶ オーケストレーターが受信
@@ -302,19 +323,19 @@ node $HOME/.codex/inline-agent-orchestrator/src/setup.mjs codex --remove
 
 Claude Code にも Codex にも、AI が別のセッションを操作するためのツールは標準では用意されていません。この MCP サーバーは、それぞれの公式の仕組み（Codex は app-server の JSON-RPC、Claude Code は CLI）をツールとして提供します。
 
-| | Codex | Claude Code（デスクトップアプリ） | Claude Code（ターミナル） |
+| | Codex | Claude Code（Claude のデスクトップアプリ） | Claude Code（ターミナル） |
 | --- | --- | --- | --- |
-| 作業セッションの実行場所 | Codex の共有 app-server デーモン | アプリの会話（サイドバーに表示） | バックグラウンドセッション（agent view） |
-| 起動・指示・停止 | MCP サーバー | オーケストレーターがアプリのツール（`mcp__ccd_*`）で行う | MCP サーバー |
+| 作業セッションの実行場所 | Codex の共有 app-server デーモン | Claude のデスクトップアプリの会話（サイドバーに表示） | バックグラウンドセッション（agent view） |
+| 起動・指示・停止 | MCP サーバー | オーケストレーターが Claude のデスクトップアプリのツール（`mcp__ccd_*`）で行う | MCP サーバー |
 | オーケストレーターを閉じた場合 | 作業セッションは動き続ける | 作業セッションは動き続ける | 作業セッションは動き続ける |
-| 実行中のセッションへの指示 | 現在のターンの後に処理される（割り込みも可能） | アプリが保持し、ターンの終了後に届ける | MCP サーバーが保持し、ターンの終了後に届ける |
+| 実行中のセッションへの指示 | 現在のターンの後に処理される（割り込みも可能） | Claude のデスクトップアプリが保持し、ターンの終了後に届ける | MCP サーバーが保持し、ターンの終了後に届ける |
 | 使用量の取得方法 | app-server から取得 | 取得しない | status line が書き出す `usage.json` から取得 |
 
-- MCP サーバーはアプリのツールを呼べないため、デスクトップアプリでは `start_session` がアプリに渡す値を返し、オーケストレーターがアプリの `start_session` で起動して、`update_session` で記録します。状態は `claude agents --json` の会話の行（busy・idle）で見ます。アプリの会話の ID（`local_…`）と Claude Code のセッション ID は別のため、最初は題名で探し、作業セッションの `report` が送るセッション ID で結び付けます
+- MCP サーバーは Claude のデスクトップアプリのツールを呼べないため、デスクトップアプリでは `start_session` がデスクトップアプリに渡す値を返し、オーケストレーターがデスクトップアプリの `start_session` で起動して、`update_session` で記録します。状態は `claude agents --json` の会話の行（busy・idle）で見ます。デスクトップアプリの会話の ID（`local_…`）と Claude Code のセッション ID は別のため、最初は題名で探し、作業セッションの `report` が送るセッション ID で結び付けます
 
-- 作業セッションからの報告は、報告専用の `session-report` 接続の `report` ツールがファイルに書き込み、オーケストレーターが読み取ります。Claude Code・Codex ともに、この接続では `report` だけを公開し、作業セッションの `session-manager` は無効にしています。ただし、デスクトップアプリの作業セッションには起動時に接続を足せないため、プラグインの `session-manager` の `report` を使います（ほかのツールは使わないよう依頼に書きます）。アプリの会話には起動時に許可するツールを渡せないため、プラグインのフック（`hooks/hooks.json`、PreToolUse）がこの `report` だけを確認なしで許可します（報告用のファイルに追記するだけのツールです）
+- 作業セッションからの報告は、報告専用の `session-report` 接続の `report` ツールがファイルに書き込み、オーケストレーターが読み取ります。Claude Code・Codex ともに、この接続では `report` だけを公開し、作業セッションの `session-manager` は無効にしています。ただし、Claude のデスクトップアプリの作業セッションには起動時に接続を足せないため、プラグインの `session-manager` の `report` を使います（ほかのツールは使わないよう依頼に書きます）。デスクトップアプリの会話には起動時に許可するツールを渡せないため、プラグインのフック（`hooks/hooks.json`、PreToolUse）がこの `report` だけを確認なしで許可します（報告用のファイルに追記するだけのツールです）
 - 空きメモリ・CPU・利用枠が足りずに起動を待たせた作業があるあいだは、監視を続けて資源を見回り、余裕ができるとオーケストレーターに知らせて起動させます
-- Claude Code の使用量は CLI からは取得できず、status line に渡される値が唯一の公式な取得手段です。そのため `pauseAtPct` を使う場合は status line を設定します。元の status line は保存しておき、その表示を引き続き出力します。デスクトップアプリは status line を表示しないため、使用量は記録されません
+- Claude Code の使用量は CLI からは取得できず、status line に渡される値が唯一の公式な取得手段です。そのため `pauseAtPct` を使う場合は status line を設定します。元の status line は保存しておき、その表示を引き続き出力します。Claude のデスクトップアプリは status line を表示しないため、使用量は記録されません
 - Claude Code の作業セッションが利用制限で止まったかは、`claude logs` の末尾にある「Usage limit reached」などの文面から推定します（`read_session` の `usageLimit`）。文面は公開された仕様ではないため、変わると見分けられなくなります
 - Claude Code の作業セッションは、編集の前に `.claude/worktrees/` に worktree を作成し、その中で作業します（agent view の既定の動作）
 
@@ -325,12 +346,12 @@ Claude Code にも Codex にも、AI が別のセッションを操作するた�
 | --- | --- | --- | --- | --- |
 | `list_sessions` | オーケストレーター | 管理中、またはすべてのセッションの一覧と状態 | `thread/read`・`thread/list` | `claude agents --json` |
 | `read_session` | オーケストレーター | 最近のやり取り | `thread/turns/list` | `claude logs` |
-| `start_session` | オーケストレーター | プロファイル（またはモデル・エフォート）を指定してセッションを起動し、名前を付けて最初の依頼を送る。メモリ・CPU・使用量に余裕がない場合は起動せず、理由を返す。デスクトップアプリでは起動せず、アプリに渡す値を返す | `thread/start`・`turn/start` | `claude --bg` |
+| `start_session` | オーケストレーター | プロファイル（またはモデル・エフォート）を指定してセッションを起動し、名前を付けて最初の依頼を送る。メモリ・CPU・使用量に余裕がない場合は起動せず、理由を返す。Claude のデスクトップアプリでは起動せず、デスクトップアプリに渡す値を返す | `thread/start`・`turn/start` | `claude --bg` |
 | `send_message` | オーケストレーター | 実行中のセッションにはターンの後に、停止中のセッションには続きとして送る。モデルやエフォートの変更も可能 | `thread/queue/add`・`turn/start`・`turn/steer` | 保持した後に `claude --resume --bg` |
 | `stop_session` | オーケストレーター | 実行中のターンを停止する | `turn/interrupt` | `claude stop` |
 | `set_session_name` | オーケストレーター | 名前を変更する | `thread/name/set` | 記録のみ |
-| `get_usage` | オーケストレーター | 使用量・空きメモリ・CPU・実行数、新しく起動できるかどうか（`pauseAtPct` があるときは使用量も見る）、起動のしかた（`launcher`）、プロファイルの一覧 | `account/rateLimits/read` | `usage.json` |
-| `update_session` | オーケストレーター | 記録（状態・メモ・保留・資源待ち・アプリの会話の追加）を更新する | `state.json` | `state.json` |
+| `get_usage` | オーケストレーター | 使用量・空きメモリ・CPU・実行数、新しく起動できるかどうか（`pauseAtPct` があるときは使用量も見る）、起動のしかた（`launcher`）、プロファイルの一覧、この道具の版（動いている版・入っている版・新しい版） | `account/rateLimits/read` | `usage.json` |
+| `update_session` | オーケストレーター | 記録（状態・メモ・保留・資源待ち・ Claude のデスクトップアプリの会話の追加）を更新する | `state.json` | `state.json` |
 | `wait_events` | オーケストレーター | 状態の変化・報告（書き込まれたらすぐ）・承認待ち・メモリ不足・使用量の超過（`pauseAtPct` があるとき）と回復・資源待ちの作業を起動できる余裕を待つ。進められる作業がない状態が続くと、待っているものの一覧を返して終える | `thread/read` | `claude agents --json` |
 | `read_reports` | オーケストレーター | 報告を読む | `reports.jsonl` | `reports.jsonl` |
 | `report` | 作業セッション | オーケストレーターへ報告する | `reports.jsonl` | `reports.jsonl` |
@@ -348,8 +369,8 @@ Claude Code にも Codex にも、AI が別のセッションを操作するた�
 - **Claude Code の実行中のセッションへの指示は、ターンの終了後に届きます** — 停止したセッション宛てに保持していた指示は破棄します
 - **報告のやり取りは同じ PC 内に限られます**
 - **実験的な機能を利用しています** — Codex の app-server の一部と Claude Code の agent view は実験的な機能のため、バージョンアップで動作が変わる可能性があります
-- **`claude --bg` のセッションはデスクトップアプリに表示されません** — アプリの一覧に出ず、ピン留めもできません。デスクトップアプリではアプリの会話で起動します
-- **デスクトップアプリでは、作業セッションを起動できるのは利用者が入力したターンの中だけです** — オーケストレーターはそのターンのまま監視を続け、次の作業もそこで起動します。監視を止めたあと、アプリの知らせで再開したときなどは、起動の提案カードを出します
+- **`claude --bg` のセッションは Claude のデスクトップアプリに表示されません** — デスクトップアプリの一覧に出ず、ピン留めもできません。Claude のデスクトップアプリでは、デスクトップアプリの会話で起動します
+- **Claude のデスクトップアプリでは、作業セッションを起動できるのは利用者が入力したターンの中だけです** — オーケストレーターはそのターンのまま監視を続け、次の作業もそこで起動します。監視を止めたあと、デスクトップアプリの知らせで再開したときなどは、起動の提案カードを出します
 - **Claude Code の作業セッションがリセット時に自動で続行するかは未確認です** — 続行しない場合も、オーケストレーターが再開後に続きを依頼します
 - **新しい作業フォルダは、先に PC で信頼しておく必要があります（Claude Code）** — `claude --bg` は信頼の確認を表示できません。信頼はリポジトリごとに記録され、親フォルダを信頼しても下のリポジトリには効きません。リモート（Remote Control・スマートフォン）から使う場合は、信頼済みのリポジトリを作業フォルダにしてください
 
@@ -374,15 +395,15 @@ Claude Code にも Codex にも、AI が別のセッションを操作するた�
 </details>
 
 <details>
-<summary>Claude Code デスクトップアプリ（D1〜D3）</summary>
+<summary>Claude のデスクトップアプリ（D1〜D3）</summary>
 
 | # | 確認項目 | 手順 | うまくいかない場合 |
 | --- | --- | --- | --- |
-| D1 | 起動とピン留め | アプリの Code タブで `/inline-agent-orchestrator:manage-sessions` を実行 → 「名前は『試し』、依頼は『ファイル数を数えて report で報告して』で作業セッションを起こして」と依頼 → サイドバーのオーケストレーターの下に「試し」が表示され、ピン留めされるか | `get_usage` の `launcher` が `app` か確認する |
+| D1 | 起動とピン留め | Claude のデスクトップアプリの Code タブで `/inline-agent-orchestrator:manage-sessions` を実行 → 「名前は『試し』、依頼は『ファイル数を数えて report で報告して』で作業セッションを起こして」と依頼 → サイドバーのオーケストレーターの下に「試し」が表示され、ピン留めされるか | `get_usage` の `launcher` が `app` か確認する |
 | D2 | 報告と状態 | `wait_events` で `report`（done）を受信し、ピン留めが外れるか。`list_sessions` で「試し」の状態が `idle` になるか | `claude agents --json` に「試し」の行（kind `interactive`）があるか確認する |
-| D3 | 次の作業 | 続けて別の作業を頼む → 新しい作業セッションが起動するか | アプリが起動を断った場合は、提案カードが表示されるか確認する |
+| D3 | 次の作業 | 続けて別の作業を頼む → 新しい作業セッションが起動するか | Claude のデスクトップアプリが起動を断った場合は、提案カードが表示されるか確認する |
 
-後片付け: アプリでセッションをアーカイブ、`update_session`（remove）
+後片付け: Claude のデスクトップアプリでセッションをアーカイブ、`update_session`（remove）
 
 </details>
 
@@ -394,7 +415,7 @@ Claude Code にも Codex にも、AI が別のセッションを操作するた�
 | V1 | Codex のバージョン | `codex --version` が 0.162 以上か。`codex app-server proxy --help` が表示されるか | CLI を更新する |
 | V2 | 共有デーモンの起動 | 管理者権限のない PowerShell（Windows）で `codex app-server daemon start` を実行 → `codex agents` が開くか | `config.json` に `"transport": "embedded"` を設定して試す |
 | V3 | ツールの接続 | オーケストレーターのセッションで「`get_usage` を呼んで」と依頼 → 使用量と空きメモリが表示されるか | ツールが返したエラーメッセージを確認する |
-| V4 | セッションの起動 | 「`start_session` で、名前は『試し』、作業フォルダは空のフォルダ、依頼は『ファイル数を数えて report で報告して』」と依頼 → `codex agents` に表示されるか、`wait_events` で報告を受信できるか | デスクトップアプリに表示されない場合は `codex resume <ID>` で確認する |
+| V4 | セッションの起動 | 「`start_session` で、名前は『試し』、作業フォルダは空のフォルダ、依頼は『ファイル数を数えて report で報告して』」と依頼 → `codex agents` に表示されるか、`wait_events` で報告を受信できるか | Codex のデスクトップアプリに表示されない場合は `codex resume <ID>` で確認する |
 | V5 | 実行中のセッションへの指示 | 長めの依頼の実行中に `send_message` → 割り込まずに、ターンの後で処理されるか。`wait_events` の実行中に入力した内容がどう扱われるか | 割り込む場合は、`local-rules.md` に「停止中のときだけ送る」と記述する |
 
 後片付け: `codex archive <ID>`、`update_session`（remove）、必要に応じて `codex app-server daemon stop`
@@ -406,7 +427,7 @@ Claude Code にも Codex にも、AI が別のセッションを操作するた�
 | メッセージ | 対処 |
 | --- | --- |
 | `Workspace not trusted`・「信頼されていない」（Claude Code） | PC のターミナルで作業フォルダに移って一度 `claude` を起動し、信頼の確認で承認する。信頼はリポジトリごとで、親フォルダの信頼は効かない |
-| 「CLI がログインしていない」（Claude Code） | `claude --bg` を使うには、ターミナルで `claude` を起動して `/login` する。デスクトップアプリでは、アプリの会話で起動すればログインは不要 |
+| 「CLI がログインしていない」（Claude Code） | `claude --bg` を使うには、ターミナルで `claude` を起動して `/login` する。Claude のデスクトップアプリでは、デスクトップアプリの会話で起動すればログインは不要 |
 | `claude agents --json returned something that is not JSON`（Claude Code） | CLI を更新する。agent view の状態は `claude daemon status` で確認できる |
 | `daemon start failed`（Codex） | Windows では、管理者権限の PowerShell からは起動できません。`CODEX_HOME` のパスが長すぎる場合も起動できません |
 | `thread/queue/add を使えません`（Codex） | Codex を更新する |
@@ -427,15 +448,16 @@ Claude Code にも Codex にも、AI が別のセッションを操作するた�
 npm test
 ```
 
-版を上げるときは、`.claude-plugin/plugin.json` と `package.json` の `version` を同じ値にして main に入れます。タグ（`v<版>`）と GitHub のリリースは自動で作られます。
+版を上げるときは、`package.json`・`.claude-plugin/plugin.json` の `version`、`src/server.mjs` の `SERVER_INFO`、`src/appserver.mjs` の `CLIENT_INFO`、README（日本語・英語）の冒頭の版を同じ値にして main に入れます（ずれると `npm test` が失敗します）。版を上げないと、利用者の手元に新しい版が入りません。タグ（`v<版>`）と GitHub のリリースは自動で作られます。
 
 | パス | 説明 |
 | --- | --- |
 | `src/server.mjs` | MCP サーバー（標準入出力、JSON-RPC 2.0） |
 | `src/tools.mjs` | ツール、上限の判定、監視 |
+| `src/version.mjs` | 動いている版・ディスクに入っている版・GitHub の最新の版を比べる |
 | `src/backends/` | Codex（app-server）と Claude Code（CLI）それぞれの実装 |
 | `src/setup.mjs` | セットアップスクリプト（Codex への登録とスキルのインストール、Claude Code の status line の設定） |
-| `src/allow-report.mjs` / `hooks/hooks.json` | デスクトップアプリの作業セッションの `report` を確認なしで許可するフック |
+| `src/allow-report.mjs` / `hooks/hooks.json` | Claude のデスクトップアプリの作業セッションの `report` を確認なしで許可するフック |
 | `src/claude-statusline.mjs` | Claude Code の使用量を記録する status line |
 | `src/appserver.mjs` / `src/ws.mjs` | Codex app-server のクライアント（Windows の Node.js は Unix ドメインソケットを扱えないため、`codex app-server proxy` 経由の WebSocket で通信） |
 | `skills/manage-sessions/` | オーケストレーターの手順（スキル） |
