@@ -16,7 +16,8 @@ When you run several tasks in parallel with Claude Code or Codex, do you end up 
 - **The UI you already use** — There is no separate app or screen. You keep using Claude Code and Codex as they are, with no tmux or background service to run
 - **A session for each task** — Splits your request into tasks, picks a name, working folder and model for each, and runs them in separate sessions
 - **Questions batched, with a recommendation** — Gathers every session's "how should I proceed?" and asks them in one go, with options and a recommendation. Once you answer, each task picks up where it left off
-- **Easy on your machine and your plan limits** — Keeps an eye on how many sessions run at once and on free memory. Work stopped by a usage limit is picked up where it left off once the limit resets ([Usage limits](#usage-limits))
+- **Listed in the desktop app's sidebar** — In the Claude Code desktop app, worker sessions start as app sessions and are listed under the orchestrator. They are pinned while they run and unpinned when they finish ([Using the desktop app](#using-the-desktop-app))
+- **Easy on your machine and your plan limits** — There is no fixed number of sessions; new ones start while there is free memory and CPU to spare. Work stopped by a usage limit is picked up where it left off once the limit resets ([Usage limits](#usage-limits))
 - **Stalled work gets back on track** — Notices sessions that crashed or stopped midway and asks them to carry on from where they stopped
 - **Only Node.js required** — No other packages, so it stays light
 
@@ -115,6 +116,17 @@ The orchestrator splits the work, starts worker sessions, and begins monitoring.
 
 The orchestrator session is named `Manager`. In the Claude Code desktop app this happens automatically. Claude Code in the terminal does not let a tool rename a session, so when prompted, type `/rename Manager` into the chat box.
 
+### Using the desktop app
+
+When the orchestrator runs in the Claude Code desktop app (Code tab), worker sessions start as app sessions.
+
+- **Listed in the sidebar** — Worker sessions are listed under the orchestrator; click one to open it and talk to it directly. The app creates a worktree and a branch for each worker session
+- **Pinned while running** — Managed worker sessions are pinned while they run and unpinned when they are done. After the final report, the orchestrator asks whether to archive the finished sessions (archiving also cleans up their worktrees)
+- **When you ask remotely** — When the app does not accept a start, such as when you ask through Remote Control (a phone or claude.ai), the orchestrator shows a suggestion card instead. Click the card in the app on your PC to start the session
+- **Usage is not read** — The desktop app shows no status line, so stopping for usage (`pauseAtPct`) has no effect there
+
+Claude Code in the terminal keeps starting `claude --bg` background sessions. To use `claude --bg` from the desktop app (ask "start it with `via: bg`"), first start `claude` in a terminal and `/login` (the app's sign-in does not apply to the CLI). Background sessions do not appear in the app's sidebar and cannot be pinned.
+
 ### While it runs
 
 - **Send new requests to the orchestrator** — If a session is already working on the same area, the request goes there; otherwise a new session is started
@@ -140,13 +152,15 @@ You can also point to another location with the `CSM_HOME` environment variable.
 
 | Key | Default | Description |
 | --- | --- | --- |
-| `maxRunning` | `3` | Maximum number of worker sessions running at once |
 | `minFreeMemGb` | `2` | No new sessions are started while free memory (GB) is below this value |
+| `maxCpuPct` | `90` | No new sessions are started while CPU usage (%, averaged over one second) is at or above this value. `null` ignores the CPU |
 | `pauseAtPct` | Claude Code: `null`<br>Codex: `95` | When usage reaches this percentage, no new sessions are started and running sessions are stopped. `null` never stops for usage. A number applies to both; write `{ "claude": 90 }` to change one only ([Usage limits](#usage-limits)) |
 | `watchIntervalMin` | `30` | How often the orchestrator checks in when nothing happens (minutes, max 60) |
 | `pollSec` | `5` | How often session status is checked (seconds) |
 | `profiles` | See below | Model and effort for each kind of task |
 | `defaults.model` / `defaults.effort` | — | Model and effort when no profile is used (each tool's default when omitted) |
+
+The cap on the number of running sessions (the former `maxRunning`) is gone. It is ignored if it is still in `config.json`.
 
 <details>
 <summary>Claude Code and Codex specific settings</summary>
@@ -263,6 +277,10 @@ You ── request ──▶ Orchestrator (skill: manage-sessions)
                  │                              │
              with Codex                   with Claude Code
      codex app-server (shared daemon)   claude --bg / agents / logs / stop
+                 │                       (in the desktop app, the orchestrator
+                 │                        starts, messages and pins sessions with
+                 │                        the app's tools; status comes from
+                 │                        claude agents)
                  │                              │
                  ├── worker session A ── report ──▶ reports.jsonl ──▶ read by the orchestrator
                  └── worker session B
@@ -270,14 +288,16 @@ You ── request ──▶ Orchestrator (skill: manage-sessions)
 
 Neither Claude Code nor Codex ships a tool that lets the AI operate other sessions. This MCP server exposes each product's official interface — the app-server JSON-RPC API for Codex and the CLI for Claude Code — as tools.
 
-| | Codex | Claude Code |
-| --- | --- | --- |
-| Where worker sessions run | The shared Codex app-server daemon | Claude Code background sessions (agent view) |
-| If you close the orchestrator | Worker sessions keep running | Worker sessions keep running |
-| Messages to a running session | Processed after the current turn (interrupting is also possible) | Held by the MCP server and delivered after the turn ends |
-| How usage is read | From app-server | From `usage.json`, written by the status line |
+| | Codex | Claude Code (desktop app) | Claude Code (terminal) |
+| --- | --- | --- | --- |
+| Where worker sessions run | The shared Codex app-server daemon | App sessions (listed in the sidebar) | Background sessions (agent view) |
+| Starting, messaging, stopping | The MCP server | The orchestrator, with the app's tools (`mcp__ccd_*`) | The MCP server |
+| If you close the orchestrator | Worker sessions keep running | Worker sessions keep running | Worker sessions keep running |
+| Messages to a running session | Processed after the current turn (interrupting is also possible) | Held by the app and delivered after the turn ends | Held by the MCP server and delivered after the turn ends |
+| How usage is read | From app-server | Not read | From `usage.json`, written by the status line |
 
-- Reports are written to a file by the `report` tool on the dedicated `session-report` connection and read by the orchestrator. In both Claude Code and Codex, this connection exposes only `report`, and the worker's `session-manager` is disabled
+- The MCP server cannot call the app's tools, so in the desktop app `start_session` returns the values to pass to the app; the orchestrator starts the session with the app's `start_session` and records it with `update_session`. Status comes from the session's row in `claude agents --json` (busy, idle). The app's session ID (`local_…`) differs from the Claude Code session ID, so the row is first found by title and then linked by the session ID that the worker's `report` carries
+- Reports are written to a file by the `report` tool on the dedicated `session-report` connection and read by the orchestrator. In both Claude Code and Codex, this connection exposes only `report`, and the worker's `session-manager` is disabled. Desktop app worker sessions cannot be given a connection at start, so they use `report` from the plugin's `session-manager` (their request tells them not to use its other tools)
 - Claude Code usage cannot be read from the CLI; the values passed to the status line are the only official source. That is why a status line is set up when you use `pauseAtPct`. Your previous status line is saved and its output keeps being shown. The desktop app shows no status line, so no usage is recorded there
 - Whether a Claude Code worker session was stopped by a usage limit is inferred from wording such as "Usage limit reached" near the end of `claude logs` (`usageLimit` in `read_session`). The wording is not a published interface, so a change to it would go unnoticed
 - Claude Code worker sessions create a worktree under `.claude/worktrees/` before editing and work inside it (the default behavior of agent view)
@@ -289,11 +309,11 @@ Neither Claude Code nor Codex ships a tool that lets the AI operate other sessio
 | --- | --- | --- | --- | --- |
 | `list_sessions` | Orchestrator | List managed sessions, or all sessions, with their status | `thread/read`, `thread/list` | `claude agents --json` |
 | `read_session` | Orchestrator | Recent exchanges | `thread/turns/list` | `claude logs` |
-| `start_session` | Orchestrator | Start a session with a profile (or a model and effort), name it, and send the first request. If a limit would be exceeded, it does not start and returns the reason | `thread/start`, `turn/start` | `claude --bg` |
+| `start_session` | Orchestrator | Start a session with a profile (or a model and effort), name it, and send the first request. Without enough memory, CPU or usage to spare, it does not start and returns the reason. In the desktop app it does not start, and returns the values to pass to the app | `thread/start`, `turn/start` | `claude --bg` |
 | `send_message` | Orchestrator | Send after the current turn to a running session, or as a continuation to a stopped one. Can also change the model or effort | `thread/queue/add`, `turn/start`, `turn/steer` | Held, then `claude --resume --bg` |
 | `stop_session` | Orchestrator | Stop the running turn | `turn/interrupt` | `claude stop` |
 | `set_session_name` | Orchestrator | Rename a session | `thread/name/set` | Record only |
-| `get_usage` | Orchestrator | Usage, free memory, number of running sessions, whether a new one may start (usage counts only with `pauseAtPct`), and the list of profiles | `account/rateLimits/read` | `usage.json` |
+| `get_usage` | Orchestrator | Usage, free memory, CPU, number of running sessions, whether a new one may start (usage counts only with `pauseAtPct`), how sessions are started (`launcher`), and the list of profiles | `account/rateLimits/read` | `usage.json` |
 | `update_session` | Orchestrator | Update the record (status, notes, on hold) | `state.json` | `state.json` |
 | `wait_events` | Orchestrator | Wait for status changes, reports, approval requests, low memory, and usage limits being hit (with `pauseAtPct`) or reset | `thread/read` | `claude agents --json` |
 | `read_reports` | Orchestrator | Read reports | `reports.jsonl` | `reports.jsonl` |
@@ -307,13 +327,14 @@ Every call follows the official documentation (for Codex, `learn.chatgpt.com/doc
 
 - **It does not approve on your behalf** — When a worker session is waiting for approval or input, the orchestrator only tells you how to open it. With Claude Code's default (`acceptEdits`), running commands waits for confirmation
 - **Monitoring happens within the orchestrator's turn** — When no sessions are running, monitoring ends and resumes the next time you talk to the orchestrator
-- **Only the number of sessions and memory are watched** — Individual processes, such as how many dev servers are running, are not counted. Put any rules you need in `local-rules.md`
+- **Only free memory and CPU are watched** — Individual processes, such as how many dev servers are running, are not counted. Put any rules you need in `local-rules.md`
 - **Codex workers use a dedicated reporting connection** — For sessions started by this tool, only `session-report`'s `report` is pre-approved. `session-manager` is disabled within that worker; other MCP servers' approval settings and the sandbox are unchanged. Reporting settings are reapplied when the orchestrator resumes the worker. If an older session is still connected to another terminal or manager, close that connection and let the shared daemon unload it before resuming
 - **Messages to a running Claude Code session arrive after its turn ends** — Messages held for a session that is then stopped are discarded
 - **Reports are exchanged only within the same machine**
 - **Built on experimental features** — Parts of the Codex app-server and Claude Code's agent view are experimental, and their behavior may change between versions
-- **Desktop app integration is unverified** — Whether worker sessions appear in the desktop apps' session lists has not been checked. While a session is running, don't continue it from a desktop app
-- **Whether Claude Code background sessions continue by themselves when the limit resets is unverified** — If they don't, the orchestrator asks them to carry on once it is back
+- **`claude --bg` sessions do not appear in the desktop app** — They are not listed and cannot be pinned. In the desktop app, worker sessions start as app sessions
+- **A desktop app worker session waiting for approval looks busy to the watch** — Check the app's sidebar. The orchestrator reads a session that has been running long without a report
+- **Whether Claude Code worker sessions continue by themselves when the limit resets is unverified** — If they don't, the orchestrator asks them to carry on once it is back
 - **A new working folder must first be trusted on the PC (Claude Code)** — `claude --bg` cannot show the trust prompt. Trust is recorded per repository; trusting a parent folder does not cover the repositories under it. When you use the orchestrator remotely (Remote Control, a phone), use an already trusted repository as the working folder
 
 ## Verification
@@ -337,6 +358,19 @@ Cleanup: `claude stop <ID>`, `claude rm <ID>`, `update_session` (remove)
 </details>
 
 <details>
+<summary>Claude Code desktop app (D1–D3)</summary>
+
+| # | Check | Steps | If it fails |
+| --- | --- | --- | --- |
+| D1 | Starting and pinning | In the app's Code tab, run `/inline-agent-orchestrator:manage-sessions` → ask "start a worker session named 'trial' with the request 'count the files and send the result with report'" → does 'trial' appear under the orchestrator in the sidebar, pinned? | Check that `launcher` in `get_usage` is `app` |
+| D2 | Report and status | Does `wait_events` receive the `report` (done), and is the pin removed? Does `list_sessions` show 'trial' as `idle`? | Check that `claude agents --json` has a row for 'trial' (kind `interactive`) |
+| D3 | The next task | Ask for another task → does a new worker session start? | If the app refuses the start, check that a suggestion card appears |
+
+Cleanup: archive the session in the app, `update_session` (remove)
+
+</details>
+
+<details>
 <summary>Codex (V1–V5)</summary>
 
 | # | Check | Steps | If it fails |
@@ -356,6 +390,7 @@ Cleanup: `codex archive <ID>`, `update_session` (remove), and `codex app-server 
 | Message | Fix |
 | --- | --- |
 | `Workspace not trusted` / "not trusted" (Claude Code) | In a terminal on the PC, start `claude` once in the working folder and accept the trust prompt. Trust is per repository; trusting a parent folder does not help |
+| "The CLI is not logged in" (Claude Code) | To use `claude --bg`, start `claude` in a terminal and `/login`. In the desktop app, starting app sessions needs no CLI login |
 | `claude agents --json returned something that is not JSON` (Claude Code) | Update the CLI. Check agent view's status with `claude daemon status` |
 | `daemon start failed` (Codex) | On Windows, it cannot be started from an administrator PowerShell. It also fails if the `CODEX_HOME` path is too long |
 | `thread/queue/add を使えません` (Codex) | Update Codex |
@@ -365,7 +400,7 @@ Cleanup: `codex archive <ID>`, `update_session` (remove), and `codex app-server 
 
 The following information helps track down the cause.
 
-- The step that failed (C1–C6, V1–V5) and the output of `claude --version` or `codex --version`, and `node --version`
+- The step that failed (C1–C6, D1–D3, V1–V5) and the output of `claude --version` or `codex --version`, and `node --version`
 - The error message, or the full output of the command
 - `state.json`, `reports.jsonl`, and `config.json` from the data folder; for Claude Code, also `worker-mcp.json`, `usage.json`, and `statusline.json`
 - For Claude Code, the output of `claude plugin list` run in a terminal; for Codex, the `[mcp_servers.session-manager]` section of `config.toml`
