@@ -225,7 +225,7 @@ When nothing happens, the orchestrator checks in every `watchIntervalMin` minute
 
 ### When nothing can move forward
 
-When every session is waiting for a decision, an approval or input, or for free memory or CPU, and nothing can move forward for `stopWhenStuckMin` (2 hours by default), the orchestrator ends the monitoring by itself, so that it doesn't keep using usage and CPU while waiting for nothing. Waiting for the usage limit to reset does not count, since the work resumes once it does. A report, a status change or an instruction from the orchestrator starts the count over.
+When every session is waiting for a decision, an approval or input, or for free memory or CPU, and nothing can move forward for `stopWhenStuckMin` (2 hours by default), the orchestrator ends the monitoring by itself, so that it doesn't keep using usage and CPU while waiting for nothing. When only sessions waiting for your decision are left, it also waits this long before ending. Waiting for the usage limit to reset does not count, since the work resumes once it does. A report, a status change or an instruction from the orchestrator starts the count over.
 
 When it ends the monitoring, the orchestrator:
 

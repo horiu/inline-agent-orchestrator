@@ -113,7 +113,9 @@ export function createTools({ backend, client, store, sys = {} }) {
     for (const r of store.peekReports({ all: true }).reports) {
       const id = r.threadId ?? (r.from ? byName.get(r.from) ?? null : null);
       if (!id) continue;
-      if (r.kind !== 'question') questions.delete(id);
+      // Questions written before the last reply to the session are answered.
+      const repliedAt = state.targets[id]?.repliedAt;
+      if (r.kind !== 'question' || (repliedAt && String(r.at ?? '') <= repliedAt)) questions.delete(id);
       else questions.set(id, [...(questions.get(id) ?? []), String(r.text ?? '').slice(0, QUESTION_CHARS)].slice(-QUESTIONS_KEPT));
     }
     const out = [];
@@ -477,6 +479,8 @@ export function createTools({ backend, client, store, sys = {} }) {
         if (store.state().targets[threadId])
           store.updateTarget(threadId, {
             status: 'running',
+            // Same clock as the reports' `at`, to tell answered questions.
+            repliedAt: new Date().toISOString(),
             lastSeen: { status: 'active', activeFlags: [] },
             ...change,
             ...(asked ? { profile: run.profile } : {}),
@@ -579,6 +583,8 @@ export function createTools({ backend, client, store, sys = {} }) {
         // the end of its first turn.
         const prev = store.state().targets[threadId];
         if (clean.waitForRoom && !prev?.waitForRoom) clean.waitSince = new Date(now()).toISOString();
+        // An app session answered with SendMessage is marked running again.
+        if (clean.status === 'running' && prev?.status === 'waiting_user') clean.repliedAt = new Date().toISOString();
         if (clean.via === 'app' && !prev)
           Object.assign(clean, { startedAt: new Date(now()).toISOString(), lastSeen: { status: 'active', activeFlags: [] } });
         return { threadId, target: store.updateTarget(threadId, clean) };
@@ -587,7 +593,7 @@ export function createTools({ backend, client, store, sys = {} }) {
 
     wait_events: {
       description:
-        '見回り。管理中の会話の状態の変化・作業の会話からの報告・承認や入力の待ち・空きメモリ不足・利用枠の超過（pauseAtPct があるとき）と回復・資源待ちの仕事を起こせる余裕（roomAvailable）を、起きるまで待って返す（報告は書かれたらすぐ）。何も起きなければ最長 intervalMin 分（省略時は設定の watchIntervalMin。設定より長くはできない）で timedOut を返す。待つ間はモデルを使わない。動いている会話・枠で止めた会話・資源待ちの仕事・未読の報告がどれも無ければすぐ idle=true を返す（見回りを止めてよい合図）。進められる仕事が無い（どの会話も利用者の判断・承認・入力か、メモリ・CPU の空きを待っている）まま設定の stopWhenStuckMin 分（既定 120）続くと、stuck=true と待っているもの（waiting）を返す（見回りを止める合図。呼び出しをまたいで数え、状態の変化・報告・send_message・start_session・update_session で数え直す）。同時に呼べるのは1つだけ（新しい呼び出しが前のものを打ち切る）。',
+        '見回り。管理中の会話の状態の変化・作業の会話からの報告・承認や入力の待ち・空きメモリ不足・利用枠の超過（pauseAtPct があるとき）と回復・資源待ちの仕事を起こせる余裕（roomAvailable）を、起きるまで待って返す（報告は書かれたらすぐ）。何も起きなければ最長 intervalMin 分（省略時は設定の watchIntervalMin。設定より長くはできない）で timedOut を返す。待つ間はモデルを使わない。動いている会話・判断待ちの会話（stopWhenStuckMin があるとき）・枠で止めた会話・資源待ちの仕事・未読の報告がどれも無ければすぐ idle=true を返す（見回りを止めてよい合図）。進められる仕事が無い（どの会話も利用者の判断・承認・入力か、メモリ・CPU の空きを待っている）まま設定の stopWhenStuckMin 分（既定 120）続くと、stuck=true と待っているもの（waiting）を返す（見回りを止める合図。呼び出しをまたいで数え、状態の変化・報告・send_message・start_session・update_session で数え直す）。同時に呼べるのは1つだけ（新しい呼び出しが前のものを打ち切る）。',
       // Marked read-only for approval prompts: it changes no conversation's
       // content, only the manager's own read mark and last-seen statuses (and,
       // for Claude Code, it delivers messages the manager already queued).
@@ -716,7 +722,10 @@ export function createTools({ backend, client, store, sys = {} }) {
           // Threads paused for the usage limit keep the watch going until
           // usageRecovered has been reported for them.
           const waitForRecovery = paused.length > 0 && alerts.usageRecovered !== paused.slice().sort().join(',');
-          if (!events.length && !anyActive && !anyQueued && !waitForRecovery && !waitingRoom.length && !store.hasUnreadReports()) {
+          // Sessions waiting for the user's decision keep the watch going
+          // until it ends as stuck (only while stopWhenStuckMin is set).
+          const waitingUser = stuckLimitMs !== null && ids.some((id) => state.targets[id].status === 'waiting_user');
+          if (!events.length && !anyActive && !anyQueued && !waitForRecovery && !waitingRoom.length && !waitingUser && !store.hasUnreadReports()) {
             if (!commit()) return cancel();
             return { idle: true, events: [], live, hint: '動いている会話も未読の報告もありません。見回りを止めてよい' };
           }
@@ -821,12 +830,15 @@ export function createTools({ backend, client, store, sys = {} }) {
               if (stuckSince === null || stuckSince > t) stuckSince = t;
               if (Number.isFinite(activityAt) && activityAt > stuckSince) stuckSince = Math.min(activityAt, t);
               if (t - stuckSince >= stuckLimitMs) {
+                // A report written since the read above comes first.
+                if (woken || store.peekReports().nextOffset !== reportsOffset) continue;
                 stuck = true;
                 break;
               }
             }
             if (now() >= deadline) break;
-            const pause = sleep(Math.max(0, Math.min(nextPoll, deadline) - now())).then(() => 'poll');
+            const stuckAt = stuckSince === null ? Infinity : stuckSince + stuckLimitMs;
+            const pause = sleep(Math.max(0, Math.min(nextPoll, deadline, stuckAt) - now())).then(() => 'poll');
             const nudge = new Promise((r) => {
               wake = () => r('report');
               if (woken) r('report');
