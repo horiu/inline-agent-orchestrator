@@ -533,11 +533,11 @@ export function createTools({ backend, client, store, sys = {} }) {
 
     get_usage: {
       description:
-        '利用枠（窓ごとの使用率とリセットの時刻）・空きメモリ・動いている会話の数と、いま新しく動かしてよいか（canStartNew と理由）を返す。pauseAtPct が null なら利用枠では止めない（読めなくてもよい）。profiles は仕事の種類ごとのおすすめのモデルとエフォート（null は、start_session ではそれぞれの既定、send_message では今の値のまま）。',
+        '利用枠（窓ごとの使用率とリセットの時刻）・空きメモリ・動いている会話の数と、いま新しく動かしてよいか（canStartNew と理由）を返す。pauseAtPct が null なら利用枠では止めない（読めなくてもよい）。profiles は仕事の種類ごとのおすすめのモデルとエフォート（null は、start_session ではそれぞれの既定、send_message では今の値のまま）。version はこの道具の版: running（動いている版）・installed（ディスクに入っている版。プラグインとして入れていなければ null）・autoUpdate（自動更新）・latest（自動更新が切れているときだけ、GitHub の最新の版。1日1回まで読む）・reloadNeeded（新しい版が入っているのに、この会話は古い版のまま）・updateAvailable（新しい版が出ているのに入っていない）。',
       readOnly: true,
       inputSchema: { type: 'object', properties: {} },
       async handler() {
-        return { ...(await guard()), profiles: profileList(store.config()) };
+        return { ...(await guard()), profiles: profileList(store.config()), version: sys.version ? await sys.version() : null };
       },
     },
 

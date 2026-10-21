@@ -1,7 +1,7 @@
 {
   "name": "inline-agent-orchestrator",
   "displayName": "Inline Agent Orchestrator",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "Turn your everyday Claude Code or Codex session into an orchestrator that starts, monitors and steers other sessions.",
   "author": { "name": "horiu" },
   "homepage": "https://github.com/horiu/inline-agent-orchestrator",

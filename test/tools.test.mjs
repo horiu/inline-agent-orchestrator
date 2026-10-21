@@ -344,6 +344,14 @@ test('get_usage labels windows and reports the guard', async () => {
   assert.deepEqual(u.usage.windows.map((w) => [w.window, w.usedPercent]), [['5h', 40], ['weekly', 10]]);
   assert.equal(u.usage.windows[0].resetsAt, new Date(1_800_000_000 * 1000).toISOString());
   assert.equal(u.freeMemGb, 8);
+  assert.equal(u.version, null, 'no version check unless the server gives one');
+});
+
+test('get_usage returns the version check the server gives', async () => {
+  const version = { running: '0.7.0', installed: '0.8.0', autoUpdate: true, latest: null, reloadNeeded: true, updateAvailable: false };
+  const client = new AppServerClient({ connector: new FakeAppServer().connector() });
+  const { tools: t } = createTools({ client, store, sys: { freemem: () => 8 * GB, totalmem: () => 16 * GB, cpus: idleCpus, version: async () => version } });
+  assert.deepEqual((await t.get_usage.handler({})).version, version);
 });
 
 test('get_usage prefers rateLimitsByLimitId when present', async () => {
