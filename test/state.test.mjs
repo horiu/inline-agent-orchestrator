@@ -2,10 +2,19 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, appendFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import { Store, stateDir, DEFAULT_CONFIG } from '../src/state.mjs';
 
 const fresh = () => new Store(mkdtempSync(join(tmpdir(), 'csm-state-')));
+
+test('Store anchors a relative directory and all file paths to the manager cwd', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'csm-relative-'));
+  const store = new Store(relative(process.cwd(), dir));
+  assert.equal(store.dir, dir);
+  assert.equal(store.configPath, join(dir, 'config.json'));
+  assert.equal(store.statePath, join(dir, 'state.json'));
+  assert.equal(store.reportsPath, join(dir, 'reports.jsonl'));
+});
 
 test('config merges user values over defaults, including a BOM-prefixed file', () => {
   const s = fresh();

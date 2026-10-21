@@ -32,7 +32,7 @@ export function firstMessage(name, threadId, prompt) {
 }
 
 export function createTools({ backend, client, store, sys = {} }) {
-  const be = backend ?? codexBackend({ client });
+  const be = backend ?? codexBackend({ client, store });
   const mem = { free: sys.freemem ?? freemem, total: sys.totalmem ?? totalmem };
   const sleep = sys.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
   const now = sys.now ?? (() => Date.now());

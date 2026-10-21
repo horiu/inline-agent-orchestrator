@@ -5,7 +5,7 @@
 
 import { mkdirSync, readFileSync, writeFileSync, renameSync, appendFileSync, existsSync, statSync, openSync, readSync, closeSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 
 export const DEFAULT_CONFIG = {
   codexPath: 'codex',
@@ -118,10 +118,12 @@ function writeJsonAtomic(path, value) {
 
 export class Store {
   constructor(dir = stateDir()) {
-    this.dir = dir;
-    this.configPath = join(dir, 'config.json');
-    this.statePath = join(dir, 'state.json');
-    this.reportsPath = join(dir, 'reports.jsonl');
+    // Anchor relative CSM_HOME once, in the manager process, before passing
+    // it to workers whose current directory may be entirely different.
+    this.dir = resolve(dir);
+    this.configPath = join(this.dir, 'config.json');
+    this.statePath = join(this.dir, 'state.json');
+    this.reportsPath = join(this.dir, 'reports.jsonl');
   }
 
   config() {

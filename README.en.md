@@ -266,7 +266,7 @@ Neither Claude Code nor Codex ships a tool that lets the AI operate other sessio
 | Messages to a running session | Processed after the current turn (interrupting is also possible) | Held by the MCP server and delivered after the turn ends |
 | How usage is read | From app-server | From `usage.json`, written by the status line |
 
-- Reports from worker sessions are written to a file by the `report` tool of the same MCP server and read by the orchestrator. Claude Code worker sessions see only the `report` tool; the orchestrator's tools are disabled for them
+- Reports are written to a file by the `report` tool on the dedicated `session-report` connection and read by the orchestrator. In both Claude Code and Codex, this connection exposes only `report`, and the worker's `session-manager` is disabled
 - Claude Code usage cannot be read from the CLI; the values passed to the status line are the only official source. That is why a status line is set up on first use. Your previous status line is saved and its output keeps being shown
 - Claude Code worker sessions create a worktree under `.claude/worktrees/` before editing and work inside it (the default behavior of agent view)
 
@@ -296,7 +296,7 @@ Every call follows the official documentation (for Codex, `learn.chatgpt.com/doc
 - **It does not approve on your behalf** — When a worker session is waiting for approval or input, the orchestrator only tells you how to open it. With Claude Code's default (`acceptEdits`), running commands waits for confirmation
 - **Monitoring happens within the orchestrator's turn** — When no sessions are running, monitoring ends and resumes the next time you talk to the orchestrator
 - **Only the number of sessions and memory are watched** — Individual processes, such as how many dev servers are running, are not counted. Put any rules you need in `local-rules.md`
-- **Codex worker sessions can see every tool** — They load MCP servers from your user-wide configuration. The first request tells them not to use anything other than `report`
+- **Codex workers use a dedicated reporting connection** — For sessions started by this tool, only `session-report`'s `report` is pre-approved. `session-manager` is disabled within that worker; other MCP servers' approval settings and the sandbox are unchanged. Reporting settings are reapplied when the orchestrator resumes the worker. If an older session is still connected to another terminal or manager, close that connection and let the shared daemon unload it before resuming
 - **Messages to a running Claude Code session arrive after its turn ends** — Messages held for a session that is then stopped are discarded
 - **Reports are exchanged only within the same machine**
 - **Built on experimental features** — Parts of the Codex app-server and Claude Code's agent view are experimental, and their behavior may change between versions

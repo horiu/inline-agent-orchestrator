@@ -3,11 +3,12 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createInterface } from 'node:readline';
 import { createMcpServer } from '../src/server.mjs';
 import { ToolError } from '../src/tools.mjs';
+import { Store } from '../src/state.mjs';
 
 function harness(tools) {
   const out = [];
@@ -91,4 +92,34 @@ test('the real entry point lists all tools over stdio without touching Codex', a
     ['get_usage', 'list_sessions', 'read_reports', 'read_session', 'report', 'send_message', 'set_session_name', 'start_session', 'stop_session', 'update_session', 'wait_events'],
   );
   assert.equal(rep.result.structuredContent.ok, true);
+});
+
+test('a report-only worker writes to a relative manager mailbox from another cwd', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'csm-worker-'));
+  const manager = new Store(relative(process.cwd(), home));
+  const child = spawn(process.execPath, [fileURLToPath(new URL('../src/server.mjs', import.meta.url))], {
+    env: { ...process.env, CSM_AGENT: 'codex', CSM_ROLE: 'worker', CSM_HOME: manager.dir },
+    cwd: mkdtempSync(join(tmpdir(), 'csm-worker-cwd-')),
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  const lines = createInterface({ input: child.stdout });
+  const call = (id, method, params) => new Promise((resolve) => {
+    lines.once('line', line => resolve(JSON.parse(line)));
+    child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n');
+  });
+  try {
+    await call(1, 'initialize', { protocolVersion: '2025-11-25' });
+    const list = await call(2, 'tools/list');
+    assert.deepEqual(list.result.tools.map(t => t.name), ['report']);
+    assert.equal(list.result.tools[0].annotations.readOnlyHint, false);
+    const denied = await call(3, 'tools/call', { name: 'start_session', arguments: {} });
+    assert.equal(denied.result.isError, true);
+    const done = await call(4, 'tools/call', { name: 'report', arguments: { kind: 'done', text: 'worker done' } });
+    assert.equal(done.result.structuredContent.ok, true);
+    assert.deepEqual(manager.peekReports().reports.map(r => [r.kind, r.text]), [['done', 'worker done']]);
+  } finally {
+    const closed = new Promise(resolve => child.once('exit', resolve));
+    child.stdin.end();
+    await closed;
+  }
 });

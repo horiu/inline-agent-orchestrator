@@ -7,6 +7,9 @@ export class FakeAppServer {
     this.calls = [];
     this.threads = new Map();
     this.turns = new Map(); // threadId -> Turn[]
+    this.reportServers = new Map();
+    this.managerServers = new Set();
+    this.ignoreResumeConfig = false;
     this.rateLimits = {
       ordinaryUsageAllowed: true,
       rateLimits: {
@@ -22,6 +25,7 @@ export class FakeAppServer {
   }
 
   addThread(id, { status = { type: 'idle' }, name = null, turns = [] } = {}) {
+    this.managerServers.add(id);
     this.threads.set(id, { id, name, status, cwd: '/work', model: 'm', reasoningEffort: null, updatedAt: 100, preview: 'hello', source: 'cli' });
     this.turns.set(id, turns);
   }
@@ -67,13 +71,27 @@ export class FakeAppServer {
       case 'thread/start': {
         const newId = `thr_${++this.seq}`;
         this.addThread(newId, { status: { type: 'idle' } });
+        if (params.config?.['mcp_servers.session-report']) this.reportServers.set(newId, params.config['mcp_servers.session-report']);
+        if (params.config?.['mcp_servers.session-manager.enabled'] === false) this.managerServers.delete(newId);
         return this.#reply(id, { thread: this.threads.get(newId), model: params.model ?? 'default-model' });
       }
       case 'thread/name/set':
         t.name = params.name;
         return this.#reply(id, {});
       case 'thread/resume':
+        // Real Codex rejoins loaded threads without applying config overrides.
+        if (t.status.type === 'notLoaded' && !this.ignoreResumeConfig && params.config?.['mcp_servers.session-report']) {
+          this.reportServers.set(t.id, params.config['mcp_servers.session-report']);
+          if (params.config['mcp_servers.session-manager.enabled'] === false) this.managerServers.delete(t.id);
+        }
+        t.status = { type: 'idle', activeFlags: [] };
         return this.#reply(id, { thread: t });
+      case 'mcpServerStatus/list': {
+        const data = [];
+        if (this.reportServers.has(params.threadId)) data.push({ name: 'session-report', tools: { report: {} } });
+        if (this.managerServers.has(params.threadId)) data.push({ name: 'session-manager', tools: { start_session: {} } });
+        return this.#reply(id, { data: data.filter(s => !params.serverName || s.name === params.serverName), nextCursor: null });
+      }
       case 'turn/start': {
         const turn = { id: `turn_${++this.seq}`, status: 'inProgress', items: [], error: null };
         this.turns.get(t.id).push(turn);

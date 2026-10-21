@@ -130,7 +130,7 @@ export function main() {
     // Connects lazily: worker conversations only call `report`, which never
     // touches the app-server, so they do not spawn proxies or daemons.
     client = new AppServerClient({ connector });
-    backend = codexBackend({ client });
+    backend = codexBackend({ client, store });
   }
   const { tools } = createTools({ backend, store });
   const server = createMcpServer({ tools: toolsForRole(tools, process.env.CSM_ROLE), write: (s) => process.stdout.write(s) });
