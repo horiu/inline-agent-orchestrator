@@ -757,3 +757,42 @@ test('in the desktop app, background workers keep the usage watch', async () => 
   const r = await tools.wait_events.handler({});
   assert.deepEqual(r.events.map((e) => [e.type, e.names ?? null]), [['usageHigh', null], ['roomAvailable', ['app']]]);
 });
+
+test('in the desktop app, usageHigh names only the background sessions to stop', async () => {
+  setup({ pauseAtPct: 50 }, DESKTOP);
+  writeFileSync(join(store.dir, 'usage.json'), JSON.stringify({ updatedAt: new Date(clock).toISOString(), rate_limits: { five_hour: { used_percentage: 70, resets_at: clock / 1000 + 3600 } } }));
+  await startInApp('app 側');
+  store.updateTarget(SID, { name: 'bg 側', status: 'running', sessionId: SID });
+  fake.sessions.push({ id: 'b0', sessionId: SID, name: 'bg 側', kind: 'background', state: 'working', status: 'busy', pid: 1, startedAt: clock });
+  const r = await tools.wait_events.handler({});
+  const high = r.events.find((e) => e.type === 'usageHigh');
+  assert.deepEqual(high.threadIds, [SID]);
+});
+
+test('a report is not lost when the session list cannot be read while binding', async () => {
+  setup({}, DESKTOP);
+  await startInApp('読めない');
+  const worker = createTools({ backend, store, sys: { env: { CLAUDE_CODE_SESSION_ID: APP_SID } } }).tools;
+  await worker.report.handler({ kind: 'question', text: 'どちらに？', from: '読めない' });
+  fake.failNext = 'agents: temporary failure';
+  const first = await tools.read_reports.handler({});
+  assert.deepEqual(first.reports.map((r) => r.text), ['どちらに？']);
+  assert.equal(store.state().targets[APP_ID].sessionId, undefined);
+  assert.equal(store.hasUnreadReports(), false);
+});
+
+test('a bound app session that goes on under a new session ID is followed by its process', async () => {
+  setup({}, DESKTOP);
+  await startInApp('続く');
+  appRow(APP_SID, '続く');
+  const worker = createTools({ backend, store, sys: { env: { CLAUDE_CODE_SESSION_ID: APP_SID } } }).tools;
+  await worker.report.handler({ kind: 'progress', text: '途中', from: '続く' });
+  await tools.read_reports.handler({});
+  assert.equal(store.state().targets[APP_ID].pid, 9);
+  // Same process, new session ID.
+  const NEW = 'ffffffff-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+  fake.set(APP_SID, { sessionId: NEW, status: 'idle' });
+  clock += 10_000;
+  assert.equal((await backend.status(APP_ID, store.state().targets[APP_ID])).status, 'idle');
+  assert.equal(store.state().targets[APP_ID].sessionId, NEW);
+});

@@ -179,6 +179,13 @@ export function claudeBackend({ store, claudePath = 'claude', permissionMode = '
     if (target?.sessionId) {
       const bySid = list.find((e) => e.sessionId === target.sessionId);
       if (bySid) return bySid;
+      // An app session can go on under a new session ID (a fork, e.g. on
+      // compaction) in the same process: follow it by the process ID.
+      const byPid = target.via === 'app' && target.pid ? list.find((e) => e.kind === 'interactive' && e.pid === target.pid) : null;
+      if (byPid?.sessionId) {
+        store.updateTarget(id, { sessionId: byPid.sessionId });
+        return byPid;
+      }
     }
     const hit = list.find((e) => e.sessionId === id || e.id === id) ?? null;
     // A bound app session that is not listed has stopped; another session
@@ -314,9 +321,9 @@ export function claudeBackend({ store, claudePath = 'claude', permissionMode = '
 
     onEvent: () => () => {},
 
-    // Whether a reported session ID belongs to the app session of a record.
-    async isAppSession(sessionId, target) {
-      return appRows(await agents({ fresh: true }), target).some((e) => e.sessionId === sessionId);
+    // The row of a reported session ID, when it is the app session of a record.
+    async appSessionRow(sessionId, target) {
+      return appRows(await agents({ fresh: true }), target).find((e) => e.sessionId === sessionId) ?? null;
     },
 
     async status(id, target) {

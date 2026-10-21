@@ -99,10 +99,17 @@ export function createTools({ backend, client, store, sys = {} }) {
   // report under the same name from another session must not move it.
   // The ID must also be an app row of this record's title started after it,
   // so an old worker of the same name cannot claim a new record.
+  // Binding is best effort: a failing `claude agents` leaves the record to
+  // the next report and never costs the report itself.
   async function bindReporter(report, threadId) {
     const t = threadId ? store.state().targets[threadId] : null;
     if (t?.via !== 'app' || !report.sessionId || t.sessionId) return;
-    if (await be.isAppSession?.(report.sessionId, t)) store.updateTarget(threadId, { sessionId: report.sessionId });
+    try {
+      const row = await be.appSessionRow?.(report.sessionId, t);
+      if (row) store.updateTarget(threadId, { sessionId: report.sessionId, pid: row.pid ?? null });
+    } catch {
+      // try again with a later report
+    }
   }
 
   // The desktop app draws no status line, so usage.json there can only be
@@ -667,7 +674,10 @@ export function createTools({ backend, client, store, sys = {} }) {
                 const over = u ? u.windows.filter((w) => w.usedPercent >= pauseAt) : [];
                 const keys = over.map((w) => `${w.limitId}/${w.window}/${w.resetsAt}`);
                 const fresh = over.filter((_, i) => !alerts.usageHigh.includes(keys[i]));
-                if (fresh.length) events.push({ type: 'usageHigh', windows: fresh, pauseAtPct: pauseAt });
+                // Only these sessions are held to pauseAtPct (in the desktop
+                // app, app sessions are not).
+                if (fresh.length)
+                  events.push({ type: 'usageHigh', windows: fresh, pauseAtPct: pauseAt, threadIds: ids.filter((id) => usageFor(state.targets[id])) });
                 alerts.usageHigh = keys;
                 usageBlocked = over.length > 0 || u?.ordinaryUsageAllowed === false;
                 // Once per set of paused threads, not on every call.
@@ -731,12 +741,13 @@ export function createTools({ backend, client, store, sys = {} }) {
         },
       },
       async handler({ all = false, limit = 50 }) {
-        const reports = store.readReports({ all, advance: !all });
-        if (!all) {
-          const byName = namesToIds(store.state());
-          for (const r of reports) await bindReporter(r, r.threadId ?? (r.from ? byName.get(r.from) ?? null : null));
-        }
-        return { reports: all ? reports.slice(-limit).reverse() : reports };
+        if (all) return { reports: store.readReports({ all: true }).slice(-limit).reverse() };
+        // The read mark moves only after the reports are handled.
+        const { reports, nextOffset } = store.peekReports();
+        const byName = namesToIds(store.state());
+        for (const r of reports) await bindReporter(r, r.threadId ?? (r.from ? byName.get(r.from) ?? null : null));
+        store.commitReportsOffset(nextOffset);
+        return { reports };
       },
     },
 

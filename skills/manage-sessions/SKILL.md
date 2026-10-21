@@ -157,7 +157,7 @@ app が起こすのを断ったとき（利用者がリモート（Remote Contro
 
 ### 上限で止める（Codex の既定、または `pauseAtPct` を数にしたとき）
 
-- `usageHigh`（窓の使用率が `pauseAtPct` 以上）が来たら、動いている会話を `stop_session`（markAs `paused_usage`）で止め、`update_session` の note に「枠で停止・<resetsAt> に再開」と書き、利用者へ一言
+- `usageHigh`（窓の使用率が `pauseAtPct` 以上）が来たら、`threadIds` の会話のうち動いているものを `stop_session`（markAs `paused_usage`）で止め（デスクトップ app では app の会話は入らない。止めない）、`update_session` の note に「枠で停止・<resetsAt> に再開」と書き、利用者へ一言
 - 枠で止めた会話（`paused_usage`）があるあいだ、`wait_events` は idle を返さずに待ち続け、枠が戻ると `usageRecovered` を1回返す。来たら `paused_usage` の会話へ「利用枠が戻りました。止まった所から続きをお願いします」と `send_message`（状態は running に戻る）
 - 止める前に送ってあった連絡は、Codex では止めても消えず、再開の後に読まれる（古くなった連絡があれば、再開の依頼に「前に送った◯◯は取り消し」と書く）。Claude Code では止めたときに捨てられるので、要るものは再開の依頼に書き直す
 - リセットまで長いとき（週の枠など）は、利用者に伝えて見回りをやめてよい。戻ったら利用者が「見回って」と打つ
