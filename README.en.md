@@ -7,7 +7,7 @@ English | [日本語](README.md)
 When you run several tasks in parallel with Claude Code or Codex, do you end up opening session after session and checking on each one in turn? Inline Agent Orchestrator turns the chat you already use into the coordinator. It starts a session for each task, keeps an eye on their progress, and comes back to you only with the decisions that need you, all at once. The screens and controls stay the same Claude Code and Codex you know.
 
 > [!NOTE]
-> This is a prototype (v0.9.0). The unit tests pass, but it has not yet been verified against real Claude Code or Codex sessions. Please run through [Verification](#verification) before relying on it.
+> This is a prototype (v0.9.1). The unit tests pass, but it has not yet been verified against real Claude Code or Codex sessions. Please run through [Verification](#verification) before relying on it.
 >
 > Messages from the tools and the skill's instructions are currently written in Japanese. The model still understands and answers in your language.
 
@@ -16,7 +16,7 @@ When you run several tasks in parallel with Claude Code or Codex, do you end up 
 - **The UI you already use** — There is no separate app or screen. You keep using Claude Code and Codex as they are, with no tmux or background service to run
 - **A session for each task** — Splits your request into tasks, picks a name, working folder and model for each, and runs them in separate sessions
 - **Questions batched, with a recommendation** — Gathers every session's "how should I proceed?" and asks them in one go, with options and a recommendation. Once you answer, each task picks up where it left off
-- **Listed in the Claude desktop app's sidebar** — In the Claude desktop app, worker sessions start as desktop app sessions and are listed under the orchestrator. They are pinned while they run and unpinned when they finish ([Using the Claude desktop app](#using-the-claude-desktop-app))
+- **Listed in the Claude desktop app's sidebar** — In the Claude desktop app, worker sessions start as desktop app sessions and are listed under the orchestrator. They are pinned while they run and unpinned when they finish. The orchestrator itself is pinned too ([Using the Claude desktop app](#using-the-claude-desktop-app))
 - **Easy on your machine and your plan limits** — There is no fixed number of sessions; new ones start while there is free memory and CPU to spare. Work stopped by a usage limit is picked up where it left off once the limit resets ([Usage limits](#usage-limits))
 - **Stalled work gets back on track** — Notices sessions that crashed or stopped midway and asks them to carry on from where they stopped
 - **Notes for later (TODOs)** — Just say something like "continue PR #7 once my usage limit resets". When the condition is met, the orchestrator asks whether to start it, and starts a worker session from it ([Things to do later (TODOs)](#things-to-do-later-todos))
@@ -123,6 +123,7 @@ The orchestrator session is named `<repository name> Manager` (for example, `wak
 When the orchestrator runs in the Claude desktop app (Code tab), worker sessions start as desktop app sessions.
 
 - **Listed in the sidebar** — Worker sessions are listed under the orchestrator; click one to open it and talk to it directly. The desktop app creates a worktree and a branch for each worker session
+- **The orchestrator is pinned too** — The orchestrator session pins itself when it starts. It is not unpinned automatically when all the work is done, so unpin it when you no longer need it (or ask the orchestrator to "unpin yourself")
 - **Pinned while running** — Managed worker sessions are pinned while they run and unpinned when they are done. After the final report, the orchestrator asks whether to archive the finished sessions (archiving also cleans up their worktrees)
 - **What you type is read right away** — The orchestrator does not sit waiting to monitor; it ends its turn once it has done what it can. When a worker session ends its turn, the Claude desktop app notifies the orchestrator, which then handles the reports and statuses. So whatever you type into the chat box is read at once
 - **When you ask remotely, or when a notice wakes it** — When you ask through Remote Control (a phone or claude.ai), or when a notice woke the orchestrator, the Claude desktop app does not accept a start. The orchestrator then shows a suggestion card and also keeps a TODO. Click the card in the desktop app on your PC to start the session; if you type again without clicking it, the orchestrator starts it then
@@ -461,7 +462,7 @@ Cleanup: `claude stop <ID>`, `claude rm <ID>`, `update_session` (remove)
 
 | # | Check | Steps | If it fails |
 | --- | --- | --- | --- |
-| D1 | Starting and pinning | In the Claude desktop app's Code tab, run `/inline-agent-orchestrator:manage-sessions` → ask "start a worker session named 'trial' with the request 'count the files and send the result with report'" → does 'trial' appear under the orchestrator in the sidebar, pinned? | Check that `launcher` in `get_usage` is `app` |
+| D1 | Starting and pinning | In the Claude desktop app's Code tab, run `/inline-agent-orchestrator:manage-sessions` → is the orchestrator session pinned? Ask "start a worker session named 'trial' with the request 'count the files and send the result with report'" → does 'trial' appear under the orchestrator in the sidebar, pinned? | Check that `launcher` in `get_usage` is `app` |
 | D2 | Not holding the turn | After the start, does the orchestrator end its turn at once (the chat box is free)? Type something while 'trial' works → is it answered at once? | Check in the transcript that the orchestrator does not call `wait_events` without `wait: false` |
 | D3 | Notice and report | When 'trial' finishes, does a notice wake the orchestrator, does `wait_events` (`wait: false`) receive the `report` (done), and is the pin removed? Does `list_sessions` show 'trial' as `idle`? | Check that `claude agents --json` has a row for 'trial' (kind `interactive`) |
 | D4 | The next task | Ask for another task → does a new worker session start? | If the desktop app refuses the start, check that a suggestion card appears and a TODO is kept |

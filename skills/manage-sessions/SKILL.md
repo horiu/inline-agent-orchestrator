@@ -33,7 +33,7 @@ Claude Code の作業の会話は、監視役が Claude のデスクトップア
 | 見回り（4.） | `wait_events` で待つ | 待たない。起きたら `wait_events`（wait false）で読んでターンを閉じる | `wait_events` で待つ |
 | 利用枠の上限で止める（既定） | 95% で止め、枠が戻ったら再開を頼む（7.） | 止めない。上限に達したら Claude Code の自動続行に任せ、戻ったら続きを頼む（7.） | 同じ |
 
-監視役の自分の名前は、Codex でも Claude のデスクトップアプリでも変えられる（1. の 2）。
+監視役の自分の名前は、Codex でも Claude のデスクトップアプリでも変えられる（1. の 2）。Claude のデスクトップアプリでは、監視役の会話もサイドバーにピン止めする（1. の 2。作業の会話と違い、終わっても自分では外さない）。
 
 ## 1. 始める
 
@@ -41,9 +41,11 @@ Claude Code の作業の会話は、監視役が Claude のデスクトップア
 2. この会話の名前を `<リポジトリ名> Manager` にする（例: wakarium で始めたら `wakarium Manager`。前の会話から続けていて、`<リポジトリ名> Manager` がもう付いていれば飛ばす）
    - リポジトリ名: 作業フォルダの git リポジトリの名前。シェルで `git rev-parse --path-format=absolute --git-common-dir` を読み、その親フォルダの名前にする（worktree（`.claude/worktrees/…` など）の中でも、worktree のフォルダ名ではなく元のリポジトリの名前になる）。git の外なら作業フォルダの名前
    - Codex: シェルで自分の会話の ID を読み（PowerShell は `$env:CODEX_THREAD_ID`、ほかは `echo $CODEX_THREAD_ID`）、`set_session_name`（threadId にその ID、name `<リポジトリ名> Manager`）。ID が空、または失敗したら飛ばす（利用者には言わない）
-   - Claude Code: Claude のデスクトップアプリでは、遅延ツール `mcp__ccd_session_mgmt__set_session_title` を ToolSearch（`select:mcp__ccd_session_mgmt__set_session_title`）で読み込み、session_id `self`・title `<リポジトリ名> Manager` で呼ぶ（利用者には言わない）。この道具が無い（ターミナルの Claude Code）か失敗したときだけ、最初の返事に一行「このセッションの名前を変えるには `/rename <リポジトリ名> Manager` と入力してください」と添える（`<リポジトリ名>` は実際の名前に置き換える）
+   - Claude Code: Claude のデスクトップアプリでは、遅延ツール `mcp__ccd_session_mgmt__set_session_title` と `mcp__ccd_sidebar__set_pinned` を ToolSearch（`select:mcp__ccd_session_mgmt__set_session_title,mcp__ccd_sidebar__set_pinned`）でまとめて読み込み、`set_session_title` を session_id `self`・title `<リポジトリ名> Manager` で呼ぶ（利用者には言わない）。この道具が無い（ターミナルの Claude Code）か失敗したときだけ、最初の返事に一行「このセッションの名前を変えるには `/rename <リポジトリ名> Manager` と入力してください」と添える（`<リポジトリ名>` は実際の名前に置き換える）
+   - 監視役のピン止め（Claude のデスクトップアプリだけ）: 続けて `mcp__ccd_sidebar__set_pinned`（session_id `self`、pinned true）で、この会話をサイドバーにピン止めする（利用者には言わない）。名前がもう付いていて上の名前の変更を飛ばしたときも、ToolSearch（`select:mcp__ccd_sidebar__set_pinned`）で読み込んでピン止めする（もうピン止めされていても、そのまま呼んでよい）。道具が無い（ターミナルの Claude Code・Codex）か失敗したら飛ばす（利用者には言わない）
+   - 監視役のピン止めは、監視役が自分では外さない（9. の最後の報告で全部終わったとき・「監視をやめて」のときも外さない。次の依頼でまた同じ会話を使えるように）。利用者に「ピン止めを外して」と頼まれたときだけ、pinned false で外す
 3. `get_usage` で利用枠・空きメモリ・CPU・動いている数・`launcher` を見る。`list_sessions`（scope=managed）で前回から続く会話と TODO（`todos`）を見る
-   - `launcher` が `app` なら、デスクトップアプリの道具を ToolSearch でまとめて読み込む（`select:mcp__ccd_session__start_session,mcp__ccd_session__dismiss_task,mcp__ccd_sidebar__set_pinned,mcp__ccd_session_mgmt__list_sessions,mcp__ccd_session_mgmt__list_events,mcp__ccd_session_mgmt__stop_session,mcp__ccd_session_mgmt__get_usage,SendMessage`。利用者には言わない）。見回りは 4. の「A. Claude のデスクトップアプリ」の形にする
+   - `launcher` が `app` なら、デスクトップアプリの道具を ToolSearch でまとめて読み込む（`select:mcp__ccd_session__start_session,mcp__ccd_session__dismiss_task,mcp__ccd_sidebar__set_pinned,mcp__ccd_session_mgmt__list_sessions,mcp__ccd_session_mgmt__list_events,mcp__ccd_session_mgmt__stop_session,mcp__ccd_session_mgmt__get_usage,SendMessage`。`set_pinned` は 2. で読み込んでいても、ここに入れたままでよい。利用者には言わない）。見回りは 4. の「A. Claude のデスクトップアプリ」の形にする
    - TODO に条件がそろったもの（`due` が true。`anytime` は除く）があれば、10. のとおり最初の返事で聞く
    - 同時に動かす数には上限が無い。空きメモリ（`minFreeMemGb`）と CPU の使用率（`maxCpuPct`）に余裕があるかぎり起こせる（`canStartNew`）
    - `pauseAtPct` が null なら利用枠では止めない（Claude Code の既定）。`usage` が読めなくてもそのまま進め、status line の設定は求めない
@@ -252,7 +254,7 @@ Claude Code の作業の会話は、監視役が Claude のデスクトップア
 - 判断待ち・利用者が確かめること
 - 済んでいない TODO: 番号・やること・条件（そろっているか）
 - `handoff.md` があれば、終わったこと（この表）だけの内容に書き換える（次に始めたときに古い待ちを続けないため）
-- worktree の片付けを聞く（消すのは利用者の返事のあと）。デスクトップアプリの会話は、アーカイブ（`mcp__ccd_session_mgmt__archive_session`）すると worktree も片付く。アーカイブは利用者の返事のあとに、終わった会話だけ
+- worktree の片付けを聞く（消すのは利用者の返事のあと）。デスクトップアプリの会話は、アーカイブ（`mcp__ccd_session_mgmt__archive_session`）すると worktree も片付く。アーカイブは利用者の返事のあとに、終わった会話だけ（監視役の会話のピン止めは外さない。1. の 2）
 
 ## 10. TODO（あとでやること）
 
