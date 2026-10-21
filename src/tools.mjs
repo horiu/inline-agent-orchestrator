@@ -2,12 +2,13 @@
 // of the same coding agent (Codex or Claude Code, see src/backends/), plus one
 // tool (`report`) for the worker conversations to report back.
 
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { cpus, freemem, totalmem } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { codexBackend } from './backends/codex.mjs';
-import { ToolError } from './backends/common.mjs';
+import { ToolError, runCli } from './backends/common.mjs';
 import { DEFAULT_CONFIG, TARGET_STATUSES, WATCH_INTERVAL_MAX_MIN, pauseAtPctFor } from './state.mjs';
+import { TODO_WHEN, checkTodo, migrateLegacy, nextTodoId, whenText } from './todos.mjs';
 
 export { ToolError };
 
@@ -24,6 +25,15 @@ const NOTICES_KEPT = 50;
 const STUCK_GAP_MS = 10 * 60_000;
 const RULES_FILE = { codex: 'AGENTS.md', claude: 'CLAUDE.md' };
 const CPU_SAMPLE_MS = 1000;
+// A watch checks the TODO conditions that read gh or the usage this often.
+const TODO_CHECK_MS = 5 * 60_000;
+// A due TODO that is still open is returned again after this long.
+const TODO_RENOTIFY_MS = 60 * 60_000;
+// How much of handoff.md list_sessions returns.
+const HANDOFF_CHARS = 2000;
+// A PR state is read again after this long; a list waits for gh at most this long.
+const PR_CACHE_MS = 60_000;
+const LIST_GH_TIMEOUT_MS = 5000;
 
 // Sessions of the Claude Code desktop app are started, messaged and stopped
 // by the manager model with the app's own tools (mcp__ccd_*), which this
@@ -57,6 +67,17 @@ export function inGitRepo(dir) {
   }
 }
 
+// Whether a process runs (signal 0 only checks; EPERM means it runs as
+// another user).
+export function processAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return err.code === 'EPERM';
+  }
+}
+
 export function firstMessage(name, threadId, prompt) {
   const id = threadId ? `／ID: ${threadId}` : '';
   return `【監視役からの依頼】この会話の名前: ${name}${id}\n\n${prompt}`;
@@ -71,6 +92,14 @@ export function createTools({ backend, client, store, sys = {} }) {
   const now = sys.now ?? (() => Date.now());
   const inGit = sys.inGit ?? inGitRepo;
   const watchReports = sys.watchReports ?? ((onChange) => store.watchReports(onChange));
+  // gh (GitHub CLI) for TODOs that wait for a PR to be merged.
+  const gh = sys.gh ?? ((args, opts) => runCli('gh', args, opts));
+  // This server's start and process, for TODOs that wait for a restart: a
+  // server started after the TODO while the one that added it has gone.
+  const startedAt = sys.startedAt ?? now();
+  const pid = sys.pid ?? process.pid;
+  const alive = sys.alive ?? processAlive;
+  const conversationId = env.CLAUDE_CODE_SESSION_ID ?? env.CODEX_THREAD_ID ?? null;
   // Where Claude Code workers start by default: app sessions when this
   // manager runs in the desktop app, background sessions (claude --bg) in a
   // terminal.
@@ -108,8 +137,9 @@ export function createTools({ backend, client, store, sys = {} }) {
   }
 
   // What each stuck session waits for: name, state, the gist of its
-  // questions since its last other report, and how to open it.
-  function waitingList(state, ids, live) {
+  // questions since its last other report, and how to open it; then the work
+  // (TODOs) waiting for room.
+  function waitingList(state, ids, live, todos = []) {
     const byName = namesToIds(state);
     const questions = new Map();
     for (const r of store.peekReports({ all: true }).reports) {
@@ -127,8 +157,7 @@ export function createTools({ backend, client, store, sys = {} }) {
       const l = live[id];
       const flag = (l?.activeFlags ?? []).find((f) => WAITS_FOR_USER[f]);
       let waitingFor = null;
-      if (t.status === 'pending' && t.waitForRoom) waitingFor = 'room';
-      else if (l?.status === 'active' && flag) waitingFor = WAITS_FOR_USER[flag];
+      if (l?.status === 'active' && flag) waitingFor = WAITS_FOR_USER[flag];
       else if (t.status === 'waiting_user') waitingFor = 'question';
       else if (t.status === 'running' && l?.status !== 'active') waitingFor = 'stopped';
       if (!waitingFor) continue;
@@ -143,6 +172,8 @@ export function createTools({ backend, client, store, sys = {} }) {
         open: t.status === 'pending' ? null : be.openCommand(id, t),
       });
     }
+    for (const td of todos)
+      out.push({ todo: td.id, name: td.start?.name ?? td.text, status: 'todo', liveStatus: null, waitingFor: 'room', questions: [], note: td.note ?? td.text, open: null });
     return out;
   }
 
@@ -151,14 +182,153 @@ export function createTools({ backend, client, store, sys = {} }) {
   // conversation does not give it again; returning notified false records it.
   function noticeOnce(version) {
     if (!version.reloadNeeded && !version.updateAvailable) return { ...version, notified: false };
-    const conversation = env.CLAUDE_CODE_SESSION_ID ?? env.CODEX_THREAD_ID ?? `pid:${process.pid}`;
-    const key = [conversation, version.running, version.installed, version.latest].join('|');
+    const key = [conversationId ?? `pid:${process.pid}`, version.running, version.installed, version.latest].join('|');
     const s = store.state();
     const given = Array.isArray(s.versionNotices) ? s.versionNotices : [];
     if (given.includes(key)) return { ...version, notified: true };
     s.versionNotices = [...given, key].slice(-NOTICES_KEPT);
     store.saveState(s);
     return { ...version, notified: false };
+  }
+
+  // Records of older versions that are TODOs now move on the first read
+  // (see migrateLegacy). Readers that other conversations call (list_sessions
+  // for the status command) move them only in what they return, so they never
+  // write state.json under the manager.
+  function loadState({ save = true } = {}) {
+    const s = store.state();
+    if (migrateLegacy(s, new Date(now()).toISOString()) && save) store.saveState(s);
+    return s;
+  }
+
+  // In the desktop app the usage counts only for background sessions (via
+  // "bg"), so only work to be started as one waits for it.
+  const usageForTodo = (td) => launcher !== 'app' || td.start?.via === 'bg';
+  const roomTodos = (s) => (s.todos ?? []).filter((td) => td.status === 'open' && td.when?.type === 'room');
+
+  // A PR state read lately is used again (also an unreadable one, so a slow
+  // or missing gh does not hold up every list).
+  const prCache = new Map();
+  async function readPr(pr, repo, cwd, timeoutMs) {
+    const key = `${repo ?? cwd ?? ''}#${pr}`;
+    const hit = prCache.get(key);
+    if (hit && now() - hit.at < PR_CACHE_MS) return hit.state;
+    let state = null;
+    try {
+      const res = await gh(['pr', 'view', String(pr), '--json', 'state', ...(repo ? ['-R', repo] : [])], { cwd: cwd ?? undefined, timeoutMs });
+      state = res.code === 0 ? JSON.parse(res.stdout).state ?? null : null;
+    } catch {
+      // unreadable: null
+    }
+    prCache.set(key, { at: now(), state });
+    return state;
+  }
+
+  // What checkTodo needs. PR states and the usage are read once per context;
+  // a list for the user waits for gh less long than the watch does.
+  function todoContext(room = async () => false, { prTimeoutMs = 20000 } = {}) {
+    const prs = new Map();
+    let usage;
+    return {
+      now,
+      running: sys.running ?? null,
+      startedAt,
+      alive,
+      async usage() {
+        if (usage === undefined) usage = await be.usage().catch(() => null);
+        return usage;
+      },
+      prState(pr, repo, cwd) {
+        const key = `${repo ?? cwd ?? ''}#${pr}`;
+        if (!prs.has(key)) prs.set(key, readPr(pr, repo, cwd, prTimeoutMs));
+        return prs.get(key);
+      },
+      room,
+    };
+  }
+
+  // Open TODOs whose condition is met and that were not reported lately. One
+  // reported TODO_RENOTIFY_MS ago and still open (not started, done or
+  // changed) comes again (repeat: true): the manager's turn may have ended
+  // before it acted, for instance at the usage limit. Work waiting for room is
+  // reported as roomAvailable, and "anytime" is never reported: the manager
+  // mentions it when the user asks or at the end.
+  async function dueTodos(s, ctx) {
+    const waiting = (s.todos ?? []).filter((td) => {
+      if (td.status !== 'open' || ['anytime', 'room'].includes(td.when?.type ?? 'anytime')) return false;
+      const told = Date.parse(td.dueNotifiedAt ?? '');
+      return !Number.isFinite(told) || now() - told >= TODO_RENOTIFY_MS;
+    });
+    const checked = await Promise.all(waiting.map((td) => checkTodo(td, ctx)));
+    return waiting
+      .map((td, i) => ({ td, c: checked[i] }))
+      .filter(({ c }) => c.due === true)
+      .map(({ td, c }) => ({
+        id: td.id,
+        text: td.text,
+        when: whenText(td.when),
+        auto: Boolean(td.auto),
+        threadId: td.threadId ?? null,
+        start: td.start ?? null,
+        detail: c.detail,
+        repeat: Boolean(td.dueNotifiedAt),
+      }));
+  }
+
+  // A TODO started as a session follows it: done when the session is done.
+  function linkTodo(id, threadId) {
+    const s = loadState();
+    const td = s.todos.find((x) => x.id === id);
+    if (!td) throw new ToolError(`TODO ${id} はありません`);
+    Object.assign(td, { threadId, status: td.status === 'done' ? 'done' : 'started', updatedAt: new Date(now()).toISOString() });
+    store.saveState(s);
+    return td;
+  }
+
+  // The TODOs of a session move on with it: started when it works again
+  // (status "started"), done when it is done (status "done"), and open again,
+  // without the session, when the session leaves the records (status "open").
+  const MOVES_FROM = { started: ['open'], done: ['open', 'started'], open: ['started'] };
+  function moveTodos(threadId, status) {
+    const s = loadState();
+    const moved = s.todos.filter((td) => td.threadId === threadId && MOVES_FROM[status].includes(td.status));
+    if (!moved.length) return [];
+    const at = new Date(now()).toISOString();
+    for (const td of moved)
+      Object.assign(td, { status, updatedAt: at, ...(status === 'done' ? { doneAt: at } : {}), ...(status === 'open' ? { threadId: null } : {}) });
+    store.saveState(s);
+    return moved.map((td) => td.id);
+  }
+
+  function handoffGist() {
+    const path = join(store.dir, 'handoff.md');
+    if (!existsSync(path)) return { path, exists: false };
+    const text = readFileSync(path, 'utf8');
+    return { path, exists: true, updatedAt: statSync(path).mtime.toISOString(), text: text.length > HANDOFF_CHARS ? `${text.slice(0, HANDOFF_CHARS)}…` : text };
+  }
+
+  // Work refused for lack of room is kept as a TODO that waits for room
+  // (auto: the user already asked for it). A TODO being started, or one
+  // already waiting for room under the same name (the same work asked again),
+  // is kept and waits again from now, so roomAvailable comes once more.
+  function keepForRoom(todoId, { name, prompt, cwd, start }) {
+    const s = loadState();
+    const at = new Date(now()).toISOString();
+    const known =
+      todoId === undefined
+        ? s.todos.find((td) => td.status === 'open' && td.when?.type === 'room' && td.start?.name === name)
+        : s.todos.find((td) => td.id === todoId);
+    if (known) {
+      Object.assign(known, { status: 'open', when: { type: 'room' }, start: { ...(known.start ?? {}), ...start }, waitSince: at, updatedAt: at });
+      store.saveState(s);
+      return known.id;
+    }
+    const id = nextTodoId(s);
+    s.nextTodoId = id + 1;
+    const gist = prompt.replace(/\s+/g, ' ').slice(0, 60);
+    s.todos.push({ id, text: `「${name}」を起こす（${gist}）`, when: { type: 'room' }, by: 'manager', auto: true, status: 'open', cwd, start, createdAt: at, waitSince: at, updatedAt: at });
+    store.saveState(s);
+    return id;
   }
 
   function appOnly(threadId, what) {
@@ -182,6 +352,11 @@ export function createTools({ backend, client, store, sys = {} }) {
     } catch {
       // try again with a later report
     }
+  }
+
+  // Longest a watch waits (minutes): the setting, at most WATCH_INTERVAL_MAX_MIN.
+  function watchMaxMin(cfg) {
+    return Math.min(Math.max(Number(cfg.watchIntervalMin) || DEFAULT_CONFIG.watchIntervalMin, 0), WATCH_INTERVAL_MAX_MIN);
   }
 
   // The desktop app draws no status line, so usage.json there can only be
@@ -237,13 +412,15 @@ export function createTools({ backend, client, store, sys = {} }) {
   // Load guard: free memory, CPU (when maxCpuPct is set) and usage limits
   // (when pauseAtPct is set for this agent). The number of running
   // conversations is reported but does not limit anything.
-  async function guard({ app = launcher === 'app' } = {}) {
+  // live false skips reading the sessions (running is then null), for callers
+  // that only need canStartNew and have read them already.
+  async function guard({ app = launcher === 'app', live: readLive = true } = {}) {
     const cfg = store.config();
     const pauseAt = pauseAtFor(cfg, app);
     const maxCpu = typeof cfg.maxCpuPct === 'number' ? cfg.maxCpuPct : null;
     const state = store.state();
-    const live = await liveStatuses(watchedIds(state), state.targets);
-    const running = Object.values(live).filter((s) => s.status === 'active').length;
+    const live = readLive ? await liveStatuses(watchedIds(state), state.targets) : {};
+    const running = readLive ? Object.values(live).filter((s) => s.status === 'active').length : null;
     const freeGb = mem.free() / GB;
     const cpu = maxCpu === null ? null : await cpuPct();
     const reasons = [];
@@ -286,7 +463,7 @@ export function createTools({ backend, client, store, sys = {} }) {
   const tools = {
     list_sessions: {
       description:
-        '会話の一覧と状態を返す。scope="managed"（既定）は監視役が管理している会話（保留と終わったものは状態を読みに行かない）、scope="all" はこの PC の会話を新しい順に。status は notLoaded（読み込まれていない・一覧に無い）/ idle（止まっている）/ active（動いている。activeFlags に waitingOnApproval・waitingOnUserInput）/ systemError。',
+        '会話の一覧と状態を返す。scope="managed"（既定）は監視役が管理している会話（保留と終わったものは状態を読みに行かない）と、TODO（todos。条件がそろっているかを due に。true / false / null＝分からない。済んだものは includeArchived のときだけ）と、引き継ぎメモ handoff.md の先頭（handoff）。scope="all" はこの PC の会話を新しい順に。status は notLoaded（読み込まれていない・一覧に無い）/ idle（止まっている）/ active（動いている。activeFlags に waitingOnApproval・waitingOnUserInput）/ systemError。監視役でない会話から呼んでもよい。',
       readOnly: true,
       inputSchema: {
         type: 'object',
@@ -294,12 +471,31 @@ export function createTools({ backend, client, store, sys = {} }) {
           scope: { type: 'string', enum: ['managed', 'all'], default: 'managed' },
           cwd: { type: 'string', description: 'scope=all のとき、この作業フォルダの会話だけ' },
           limit: { type: 'integer', minimum: 1, maximum: 100, default: 30 },
-          includeArchived: { type: 'boolean', default: false, description: '終わった・アーカイブした会話も含める' },
+          includeArchived: { type: 'boolean', default: false, description: '終わった・アーカイブした会話も含める（managed では済んだ TODO も）' },
         },
       },
       async handler({ scope = 'managed', cwd, limit = 30, includeArchived = false }) {
-        const state = store.state();
+        const state = loadState({ save: false });
         if (scope === 'managed') {
+          // The TODO conditions (gh, a CPU sample) are checked together, and
+          // while the sessions are read.
+          const rooms = new Map();
+          const room = (td) => {
+            // Room is read once for each way the work would start (the usage
+            // counts only for some, see usageForTodo).
+            const app = !usageForTodo(td);
+            if (!rooms.has(app)) rooms.set(app, guard({ app, live: false }).then((g) => g.canStartNew));
+            return rooms.get(app);
+          };
+          const ctx = todoContext(room, { prTimeoutMs: LIST_GH_TIMEOUT_MS });
+          const todosChecked = Promise.all(
+            state.todos
+              .filter((td) => td.status !== 'done' || includeArchived)
+              .map(async (td) => {
+                const c = td.status === 'open' ? await checkTodo(td, ctx) : { due: null, detail: null };
+                return { ...td, whenText: whenText(td.when), due: c.due, dueDetail: c.detail };
+              }),
+          );
           const sessions = [];
           for (const [id, target] of Object.entries(state.targets)) {
             if (target.status === 'pending' || target.status === 'done') {
@@ -312,7 +508,7 @@ export function createTools({ backend, client, store, sys = {} }) {
               sessions.push({ threadId: id, name: target.name, status: 'unreadable', error: err.message, managed: target });
             }
           }
-          return { sessions };
+          return { sessions, todos: await todosChecked, handoff: handoffGist() };
         }
         return { sessions: await be.listAll({ cwd, limit, includeArchived }, state.targets) };
       },
@@ -363,10 +559,11 @@ export function createTools({ backend, client, store, sys = {} }) {
             enum: ['app', 'bg'],
             description: 'Claude Code だけ: app＝Claude のデスクトップアプリの会話（サイドバーに出てピン止めできる）、bg＝claude --bg。省略時は監視役が Claude のデスクトップアプリなら app、ターミナルなら bg',
           },
+          todo: { type: 'integer', description: 'この会話でやる TODO の番号。会話とつなぎ、会話が done になると TODO も済みになる' },
           force: { type: 'boolean', default: false },
         },
       },
-      async handler({ name, cwd, prompt, profile, model, effort, sandbox, approvalPolicy, permissionMode, area, via, force = false }) {
+      async handler({ name, cwd, prompt, profile, model, effort, sandbox, approvalPolicy, permissionMode, area, via, todo, force = false }) {
         const cfg = store.config();
         const run = resolveRun(cfg, { profile, model, effort });
         if (via && be.agent !== 'claude') throw new ToolError('via は Claude Code だけで使える');
@@ -377,10 +574,19 @@ export function createTools({ backend, client, store, sys = {} }) {
           ([, t]) => (t.name === name || (t.aliases ?? []).includes(name)) && t.status !== 'done' && t.status !== 'pending',
         );
         if (clash) throw new ToolError(`「${name}」は管理中の会話（${clash[0]}）と同じ名前です。別の名前にしてください`);
+        if (todo !== undefined && !loadState().todos.some((td) => td.id === todo)) throw new ToolError(`TODO ${todo} はありません`);
         markActivity();
         if (!force) {
           const g = await guard({ app: be.agent === 'claude' && (via ?? launcher) === 'app' });
-          if (!g.canStartNew) return { started: false, reasons: g.reasons, guard: g, ...(be.agent === 'claude' ? { via: via ?? launcher } : {}) };
+          if (!g.canStartNew) {
+            const start = Object.fromEntries(
+              Object.entries({ name, cwd, prompt, profile, model, effort, sandbox, approvalPolicy, permissionMode, area, via: be.agent === 'claude' ? via ?? launcher : undefined }).filter(
+                ([, v]) => v !== undefined,
+              ),
+            );
+            const kept = keepForRoom(todo, { name, prompt, cwd, start });
+            return { started: false, reasons: g.reasons, guard: g, todo: kept, ...(be.agent === 'claude' ? { via: via ?? launcher } : {}) };
+          }
         }
         const d = cfg.defaults;
         const useModel = run.model ?? d.model ?? null;
@@ -404,7 +610,17 @@ export function createTools({ backend, client, store, sys = {} }) {
             started: false,
             startInApp: true,
             appStart,
-            record: { name, status: 'running', via: 'app', cwd, area: area ?? undefined, profile: run.profile ?? undefined, model: useModel ?? undefined, effort: useEffort ?? undefined },
+            record: {
+              name,
+              status: 'running',
+              via: 'app',
+              cwd,
+              area: area ?? undefined,
+              profile: run.profile ?? undefined,
+              model: useModel ?? undefined,
+              effort: useEffort ?? undefined,
+              ...(todo !== undefined ? { todo } : {}),
+            },
             next: 'mcp__ccd_session__start_session を appStart の値で呼ぶ（cwd が監視役と同じフォルダなら省く）。返った session id（local_…）を threadId にして update_session を record の値で呼び、mcp__ccd_sidebar__set_pinned（pinned true）でピン止めする',
           };
         }
@@ -446,7 +662,9 @@ export function createTools({ backend, client, store, sys = {} }) {
             effort: useEffort,
             profile: run.profile,
             lastSeen: { status: 'active', activeFlags: [] },
+            ...(todo !== undefined ? { todo } : {}),
           });
+          if (todo !== undefined) linkTodo(todo, res.threadId);
           const target = store.state().targets[res.threadId];
           return {
             started: true,
@@ -502,6 +720,7 @@ export function createTools({ backend, client, store, sys = {} }) {
             ...change,
             ...(asked ? { profile: run.profile } : {}),
           });
+        moveTodos(threadId, 'started');
         return { threadId, ...result, ...(asked ? { changed: change } : {}) };
       },
     },
@@ -550,7 +769,7 @@ export function createTools({ backend, client, store, sys = {} }) {
 
     get_usage: {
       description:
-        '利用枠（窓ごとの使用率とリセットの時刻）・空きメモリ・動いている会話の数と、いま新しく動かしてよいか（canStartNew と理由）を返す。pauseAtPct が null なら利用枠では止めない（読めなくてもよい）。profiles は仕事の種類ごとのおすすめのモデルとエフォート（null は、start_session ではそれぞれの既定、send_message では今の値のまま）。version はこの道具の版: running（動いている版）・installed（ディスクに入っている版。プラグインとして入れていなければ null）・autoUpdate（自動更新）・latest（自動更新が切れているとき（と Claude のデスクトップアプリ）だけ、GitHub の最新の版。1日1回まで読む）・reloadNeeded（新しい版が入っているのに、この会話は古い版のまま）・updateAvailable（新しい版が出ているのに入っていない）・notified（この会話で同じ版の組み合わせをすでに返した。false で返すときに記録するので、reloadNeeded か updateAvailable が true で notified が false なら、そのとき利用者に伝える）。',
+        '利用枠（窓ごとの使用率とリセットの時刻）・空きメモリ・動いている会話の数と、いま新しく動かしてよいか（canStartNew と理由）・見回りで待つ最長の分（watchIntervalMin）を返す。pauseAtPct が null なら利用枠では止めない（読めなくてもよい）。profiles は仕事の種類ごとのおすすめのモデルとエフォート（null は、start_session ではそれぞれの既定、send_message では今の値のまま）。version はこの道具の版: running（動いている版）・installed（ディスクに入っている版。プラグインとして入れていなければ null）・autoUpdate（自動更新）・latest（自動更新が切れているとき（と Claude のデスクトップアプリ）だけ、GitHub の最新の版。1日1回まで読む）・reloadNeeded（新しい版が入っているのに、この会話は古い版のまま）・updateAvailable（新しい版が出ているのに入っていない）・notified（この会話で同じ版の組み合わせをすでに返した。false で返すときに記録するので、reloadNeeded か updateAvailable が true で notified が false なら、そのとき利用者に伝える）。',
       // Marked read-only for approval prompts: it changes no conversation,
       // only the manager's own record of version notices given.
       readOnly: true,
@@ -558,13 +777,14 @@ export function createTools({ backend, client, store, sys = {} }) {
       async handler() {
         // The CPU sample and the version check (which may read GitHub) wait together.
         const [g, version] = await Promise.all([guard(), sys.version ? sys.version() : null]);
-        return { ...g, profiles: profileList(store.config()), version: version && noticeOnce(version) };
+        const cfg = store.config();
+        return { ...g, watchIntervalMin: watchMaxMin(cfg), profiles: profileList(cfg), version: version && noticeOnce(version) };
       },
     },
 
     update_session: {
       description:
-        '監視役の記録（state.json）を書き換える。管理に加える（デスクトップアプリの会話は start_session が返した record の値で）・状態（running / waiting_user / done / pending=保留 / paused=手で止めた / paused_usage=利用枠で止めた / failed）・一言のメモ・触る場所。会話そのものには何もしない。',
+        '監視役の記録（state.json）を書き換える。管理に加える（デスクトップアプリの会話は start_session が返した record の値で）・状態（running / waiting_user / done / pending=保留 / paused=手で止めた / paused_usage=利用枠で止めた / failed）・一言のメモ・触る場所・つなぐ TODO。done にすると、つないだ TODO も済みになる（todosDone）。会話そのものには何もしない。',
       inputSchema: {
         type: 'object',
         required: ['threadId'],
@@ -577,16 +797,13 @@ export function createTools({ backend, client, store, sys = {} }) {
           via: {
             type: 'string',
             enum: ['app', 'bg'],
-            description: 'app: デスクトップアプリの会話を管理に加えるとき（start_session の record の値）。資源待ちの記録には、断った start_session が返した via を入れる',
+            description: 'app: デスクトップアプリの会話を管理に加えるとき（start_session の record の値）',
           },
           cwd: { type: 'string' },
           profile: { type: 'string' },
           model: { type: 'string' },
           effort: { type: 'string' },
-          waitForRoom: {
-            type: 'boolean',
-            description: 'status pending と一緒に true: 空きメモリ・CPU が足りずに待たせている仕事。見回りを続け、余裕ができたら roomAvailable を返す',
-          },
+          todo: { type: 'integer', description: 'この会話でやる TODO の番号（start_session の record の値）。会話が done になると TODO も済みになる' },
           remove: { type: 'boolean', default: false, description: 'true なら記録から外す' },
         },
       },
@@ -597,24 +814,135 @@ export function createTools({ backend, client, store, sys = {} }) {
           const existed = Boolean(s.targets[threadId]);
           delete s.targets[threadId];
           store.saveState(s);
-          return { threadId, removed: existed };
+          // Work that was not done goes back to the TODO list.
+          const todosReopened = moveTodos(threadId, 'open');
+          return { threadId, removed: existed, ...(todosReopened.length ? { todosReopened } : {}) };
         }
         const clean = Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined));
         // A newly added app session counts as working, so the watch reports
         // the end of its first turn.
         const prev = store.state().targets[threadId];
+        // waitForRoom is from before 0.9.0 (now a TODO, see migrateLegacy);
+        // a record written that way still waits from now.
         if (clean.waitForRoom && !prev?.waitForRoom) clean.waitSince = new Date(now()).toISOString();
         // An app session answered with SendMessage is marked running again.
         if (clean.status === 'running' && prev?.status === 'waiting_user') clean.repliedAt = new Date().toISOString();
         if (clean.via === 'app' && !prev)
           Object.assign(clean, { startedAt: new Date(now()).toISOString(), lastSeen: { status: 'active', activeFlags: [] } });
-        return { threadId, target: store.updateTarget(threadId, clean) };
+        if (clean.todo !== undefined && !loadState().todos.some((td) => td.id === clean.todo)) throw new ToolError(`TODO ${clean.todo} はありません`);
+        const target = store.updateTarget(threadId, clean);
+        if (clean.todo !== undefined) linkTodo(clean.todo, threadId);
+        if (clean.status === 'running') moveTodos(threadId, 'started');
+        const todosDone = clean.status === 'done' ? moveTodos(threadId, 'done') : [];
+        return { threadId, target, ...(todosDone.length ? { todosDone } : {}) };
+      },
+    },
+
+    todo: {
+      description:
+        'TODO（あとでやること）を書く。action="add": 足す（text と when。利用者の言葉を、あとで依頼の文にできる一言に）。"update": 直す（id と変える欄）。"done": 済ませる（id）。"remove": 消す（間違えて足したとき）。一覧は list_sessions の todos。when.type: anytime（いつでも）/ usage（利用枠が戻ったら。at に戻る時刻）/ pr（PR が merged になったら。pr と、cwd か repo）/ version（この道具が version 以上の版で動いたら＝読み込んだら。ディスクに入っただけでは数えない。省くと足したときと違う版で動いたら）/ restart（足したときの session-manager が終わり、そのあとに起動し直したら。足した会話を開いたまま新しい会話を始めただけでは数えない）/ at（at の日時になったら）/ room（PC に余裕ができたら。断られた start_session が自分で足す）。条件がそろうと wait_events が todoDue（room は roomAvailable）で返す。auto=true は、そろったら聞かずに進める（利用者がすでに頼んだ仕事の続き）。',
+      inputSchema: {
+        type: 'object',
+        required: ['action'],
+        properties: {
+          action: { type: 'string', enum: ['add', 'update', 'done', 'remove'] },
+          id: { type: 'integer', description: 'update・done・remove で: TODO の番号' },
+          text: { type: 'string', description: 'やること（あとで作業の会話への依頼にできる一言）' },
+          when: {
+            type: 'object',
+            description: 'いつやるか（省くと anytime）',
+            required: ['type'],
+            properties: {
+              type: { type: 'string', enum: TODO_WHEN },
+              at: { type: 'string', description: 'at・usage: 日時（ISO 8601。例 2026-10-23T09:00:00+09:00）' },
+              pr: { type: 'integer', description: 'pr: PR の番号' },
+              repo: { type: 'string', description: 'pr: owner/name（省くと cwd のリポジトリ）' },
+              version: { type: 'string', description: 'version: この版以上になったら（例 0.10.0）' },
+            },
+          },
+          cwd: { type: 'string', description: 'リポジトリのフォルダ（PR を調べる・作業の会話を起こす所）' },
+          start: { type: 'object', description: '作業の会話を起こすときの start_session の値（name・prompt・profile など）' },
+          threadId: {
+            type: 'string',
+            description: 'つなぐ会話。add では続きを頼む会話（送ると進行中になる）、update ではこの TODO で起こした会話（すぐ進行中になる）',
+          },
+          auto: { type: 'boolean', description: '条件がそろったら聞かずに進める（既定 false）' },
+          by: { type: 'string', enum: ['user', 'manager'], description: '足したのは利用者か監視役か（既定 user）' },
+          note: { type: 'string' },
+          cardAt: { type: 'string', description: 'Claude のデスクトップアプリのカードで提案した日時' },
+        },
+        additionalProperties: false,
+      },
+      async handler({ action, id, when, text, cwd, start, threadId, auto, by, note, cardAt }) {
+        markActivity();
+        const s = loadState();
+        const at = new Date(now()).toISOString();
+        if (when !== undefined) {
+          if (!TODO_WHEN.includes(when?.type)) throw new ToolError(`when.type は ${TODO_WHEN.join(' / ')} のどれか`);
+          if (when.type === 'pr' && !Number.isInteger(when.pr)) throw new ToolError('when.type pr には pr（PR の番号）が要る');
+          if (when.type === 'at' && !Number.isFinite(Date.parse(when.at ?? ''))) throw new ToolError('when.type at には at（日時）が要る');
+          if (when.at !== undefined && !Number.isFinite(Date.parse(when.at))) throw new ToolError(`at（${when.at}）を日時として読めない。ISO 8601 で書く（例 2026-10-23T09:00:00+09:00）`);
+        }
+        // Only these fields come from the caller; status, links and the
+        // bookkeeping (createdAt, dueNotifiedAt, …) move only through the
+        // actions below and the session tools.
+        const clean = Object.fromEntries(Object.entries({ text, cwd, start, auto, note, cardAt }).filter(([, v]) => v !== undefined));
+        // gh would otherwise read the PR of whatever repository this server runs in.
+        const prWithoutRepo = (dir) => when?.type === 'pr' && !when.repo && !dir;
+        if (action === 'add') {
+          if (!clean.text) throw new ToolError('text（やること）が要る');
+          if (prWithoutRepo(clean.cwd)) throw new ToolError('when.type pr には、cwd（リポジトリのフォルダ）か when.repo（owner/name）が要る');
+          const todoId = nextTodoId(s);
+          const td = {
+            id: todoId,
+            by: by ?? 'user',
+            auto: false,
+            ...clean,
+            when: when ?? { type: 'anytime' },
+            // With threadId it is "continue this session later": it starts
+            // when a message is sent to the session.
+            ...(threadId ? { threadId } : {}),
+            status: 'open',
+            fromVersion: sys.running ?? null,
+            // A restart is seen once this server (and its conversation) has gone.
+            addedPid: pid,
+            createdAt: at,
+            updatedAt: at,
+          };
+          s.nextTodoId = todoId + 1;
+          s.todos.push(td);
+          store.saveState(s);
+          const c = await checkTodo(td, todoContext());
+          return { todo: { ...td, whenText: whenText(td.when) }, due: c.due, dueDetail: c.detail };
+        }
+        const i = s.todos.findIndex((td) => td.id === id);
+        if (i < 0) throw new ToolError(`TODO ${id} はありません`);
+        const td = s.todos[i];
+        if (action === 'remove') {
+          s.todos.splice(i, 1);
+          store.saveState(s);
+          return { removed: id };
+        }
+        if (action === 'done') Object.assign(td, { status: 'done', doneAt: at, ...(clean.note ? { note: clean.note } : {}) });
+        else {
+          if (prWithoutRepo(clean.cwd ?? td.cwd)) throw new ToolError('when.type pr には、cwd（リポジトリのフォルダ）か when.repo（owner/name）が要る');
+          if (td.status === 'done' && (when !== undefined || threadId !== undefined))
+            throw new ToolError(`TODO ${id} は済んでいます。やり直すときは add で足す`);
+          Object.assign(td, clean);
+          // A new condition is checked again, and asked about again.
+          if (when !== undefined) Object.assign(td, { when, dueNotifiedAt: null, waitSince: when.type === 'room' ? at : td.waitSince });
+          // Linking a session starts the TODO, as start_session's todo does.
+          if (threadId !== undefined) Object.assign(td, { threadId, status: 'started' });
+        }
+        td.updatedAt = at;
+        store.saveState(s);
+        return { todo: { ...td, whenText: whenText(td.when) } };
       },
     },
 
     wait_events: {
       description:
-        '見回り。管理中の会話の状態の変化・作業の会話からの報告・承認や入力の待ち・空きメモリ不足・利用枠の超過（pauseAtPct があるとき）と回復・資源待ちの仕事を起こせる余裕（roomAvailable）を、起きるまで待って返す（報告は書かれたらすぐ）。何も起きなければ最長 intervalMin 分（省略時は設定の watchIntervalMin。設定より長くはできない）で timedOut を返す。待つ間はモデルを使わない。動いている会話・判断待ちの会話（stopWhenStuckMin があるとき）・枠で止めた会話・資源待ちの仕事・未読の報告がどれも無ければすぐ idle=true を返す（見回りを止めてよい合図）。進められる仕事が無い（どの会話も利用者の判断・承認・入力か、メモリ・CPU の空きを待っている）まま設定の stopWhenStuckMin 分（既定 120）続くと、stuck=true と待っているもの（waiting）を返す（見回りを止める合図。呼び出しをまたいで数え、状態の変化・報告・send_message・start_session・update_session で数え直す）。同時に呼べるのは1つだけ（新しい呼び出しが前のものを打ち切る）。',
+        '見回り。管理中の会話の状態の変化・作業の会話からの報告・承認や入力の待ち・空きメモリ不足・利用枠の超過（pauseAtPct があるとき）と回復・資源待ちの仕事（room の TODO）を起こせる余裕（roomAvailable）・条件がそろった TODO（todoDue。1件につき1回。始める・済む・条件を直すまで、1時間ごとに repeat=true でまた返す）を、起きるまで待って返す（報告は書かれたらすぐ）。wait=false なら待たずに、いま分かる出来事だけを返す（Claude のデスクトップアプリの監視役が、起きるたびに1回呼ぶ）。何も起きなければ最長 intervalMin 分（省略時は設定の watchIntervalMin。設定より長くはできない）で timedOut を返す。待つ間はモデルを使わない。動いている会話・判断待ちの会話（stopWhenStuckMin があるとき）・枠で止めた会話・資源待ちの仕事・未読の報告がどれも無ければすぐ idle=true を返す（見回りを止めてよい合図）。進められる仕事が無い（どの会話も利用者の判断・承認・入力か、メモリ・CPU の空きを待っている）まま設定の stopWhenStuckMin 分（既定 120）続くと、stuck=true と待っているもの（waiting）を返す（見回りを止める合図。呼び出しをまたいで数え、状態の変化・報告・send_message・start_session・update_session で数え直す）。同時に呼べるのは1つだけ（新しい呼び出しが前のものを打ち切る）。',
       // Marked read-only for approval prompts: it changes no conversation's
       // content, only the manager's own read mark and last-seen statuses (and,
       // for Claude Code, it delivers messages the manager already queued).
@@ -623,9 +951,10 @@ export function createTools({ backend, client, store, sys = {} }) {
         type: 'object',
         properties: {
           intervalMin: { type: 'number', exclusiveMinimum: 0, maximum: WATCH_INTERVAL_MAX_MIN, description: '今回だけ短くするとき（分）' },
+          wait: { type: 'boolean', default: true, description: 'false なら待たずに、いま分かる出来事だけを返す' },
         },
       },
-      async handler({ intervalMin } = {}, { signal } = {}) {
+      async handler({ intervalMin, wait = true } = {}, { signal } = {}) {
         const myGen = ++waitGen;
         // A newer call or a cancelled request must not consume reports or
         // statuses: nobody would receive them.
@@ -635,29 +964,29 @@ export function createTools({ backend, client, store, sys = {} }) {
         const pollMs = cfg.pollSec * 1000;
         // "120" written by hand still counts, as for pauseAtPct.
         const stuckMin = typeof cfg.stopWhenStuckMin === 'string' && cfg.stopWhenStuckMin.trim() !== '' ? Number(cfg.stopWhenStuckMin) : cfg.stopWhenStuckMin;
-        const stuckLimitMs = typeof stuckMin === 'number' && Number.isFinite(stuckMin) && stuckMin > 0 ? stuckMin * 60_000 : null;
-        const maxMin = Math.min(Math.max(Number(cfg.watchIntervalMin) || DEFAULT_CONFIG.watchIntervalMin, 0), WATCH_INTERVAL_MAX_MIN);
+        // A call that does not wait never counts as stuck.
+        const stuckLimitMs = wait && typeof stuckMin === 'number' && Number.isFinite(stuckMin) && stuckMin > 0 ? stuckMin * 60_000 : null;
+        const maxMin = watchMaxMin(cfg);
         const limitMin = intervalMin > 0 ? Math.min(intervalMin, maxMin) : maxMin;
-        const deadline = now() + limitMin * 60_000;
-        const state = store.state();
+        const deadline = wait ? now() + limitMin * 60_000 : now();
+        const state = loadState();
         const ids = watchedIds(state);
         const paused = ids.filter((id) => state.targets[id].status === 'paused_usage');
-        // Work kept back for lack of memory or CPU keeps the watch going and
-        // is reported (roomAvailable) once there is room to start it.
-        const waitingRoom = Object.entries(state.targets)
-          .filter(([, t]) => t.status === 'pending' && t.waitForRoom)
-          .map(([id]) => id);
+        // Work kept back for lack of memory or CPU (TODOs waiting for room)
+        // keeps the watch going and is reported (roomAvailable) once there is
+        // room to start it.
+        const waitingRoom = roomTodos(state);
         // In the desktop app the usage counts only for background sessions
         // (started with via "bg", or before) and work waiting to start as one.
-        const usageFor = (t) => launcher !== 'app' || (t.status === 'pending' ? t.via === 'bg' : t.via !== 'app');
-        const pauseAt = pauseAtFor(cfg, ![...ids, ...waitingRoom].some((id) => usageFor(state.targets[id])));
+        const usageFor = (t) => launcher !== 'app' || t.via !== 'app';
+        const pauseAt = pauseAtFor(cfg, !(ids.some((id) => usageFor(state.targets[id])) || waitingRoom.some(usageForTodo)));
         const storedSeen = Object.fromEntries(ids.map((id) => [id, JSON.stringify(state.targets[id].lastSeen ?? null)]));
         const events = [];
         let reportsOffset = null;
         const alerts = { memoryLow: false, usageHigh: [], ...(state.alerts ?? {}) };
-        // roomAvailable fires once per set of records with room; a record put
-        // back under the same ID later is new work (waitSince differs).
-        const roomKey = (list) => list.map((id) => `${id}@${state.targets[id].waitSince ?? ''}`).sort().join(',');
+        // roomAvailable fires once per set of TODOs with room; a TODO refused
+        // again later waits anew (waitSince differs).
+        const roomKey = (list) => list.map((td) => `${td.id}@${td.waitSince ?? td.createdAt ?? ''}`).sort().join(',');
         if (!waitingRoom.length) alerts.roomAvailable = null;
         const byName = namesToIds(state);
         const unsubscribe = be.onEvent((msg) => {
@@ -705,7 +1034,7 @@ export function createTools({ backend, client, store, sys = {} }) {
           const recovered = paused.length > 0 && alerts.usageRecovered === paused.slice().sort().join(',');
           const usageWait =
             Object.entries(s.targets).some(([id, t]) => t.status === 'paused_usage' && !(recovered && paused.includes(id))) ||
-            (usageBlocked && waitingRoom.some((id) => usageFor(state.targets[id])));
+            (usageBlocked && waitingRoom.some(usageForTodo));
           const queued = Object.values(s.targets).some((t) => t.queue?.length && (t.status === 'running' || t.status === 'waiting_user'));
           return !working && !added && !usageWait && !queued;
         };
@@ -721,6 +1050,7 @@ export function createTools({ backend, client, store, sys = {} }) {
             if (s.targets[id] && JSON.stringify(s.targets[id].lastSeen ?? null) === storedSeen[id]) s.targets[id].lastSeen = seen[id];
           }
           s.alerts = alerts;
+          for (const td of s.todos ?? []) if (dueIds.has(td.id)) td.dueNotifiedAt = new Date(now()).toISOString();
           s.stuckSince = keepStuck && stuckSince !== null ? new Date(stuckSince).toISOString() : null;
           s.stuckCheckedAt = s.stuckSince ? new Date(now()).toISOString() : null;
           if (reportsOffset !== null) s.reportsOffset = reportsOffset;
@@ -733,6 +1063,18 @@ export function createTools({ backend, client, store, sys = {} }) {
           if (signal?.aborted) markActivity();
           return { cancelled: true, events: [], hint: '新しい見回りの呼び出しか取り消しで打ち切られた' };
         };
+        // TODOs whose condition is met are returned once (dueNotifiedAt, saved
+        // with the result). They end a wait, but do not keep the watch going:
+        // they are checked again whenever the manager wakes. Conditions that
+        // read gh or the usage are checked every TODO_CHECK_MS while waiting.
+        const dueIds = new Set();
+        let todoCheckedAt = -Infinity;
+        const checkDue = async () => {
+          todoCheckedAt = now();
+          const due = (await dueTodos(loadState(), todoContext())).filter((d) => !dueIds.has(d.id));
+          for (const d of due) dueIds.add(d.id);
+          if (due.length) events.push({ type: 'todoDue', todos: due });
+        };
         // A written report wakes the wait at once (woken stays set until the
         // next read, so a report written meanwhile is not missed).
         let woken = false;
@@ -741,6 +1083,7 @@ export function createTools({ backend, client, store, sys = {} }) {
         try {
           let live = await liveStatuses(ids, state.targets);
           diff(live);
+          await checkDue();
           const anyActive = Object.values(live).some((s) => s.status === 'active');
           const anyQueued = Object.values(state.targets).some((t) => t.queue?.length && (t.status === 'running' || t.status === 'waiting_user'));
           // Threads paused for the usage limit keep the watch going until
@@ -753,10 +1096,12 @@ export function createTools({ backend, client, store, sys = {} }) {
             if (!commit()) return cancel();
             return { idle: true, events: [], live, hint: '動いている会話も未読の報告もありません。見回りを止めてよい' };
           }
-          closeWatch = watchReports(() => {
-            woken = true;
-            wake();
-          });
+          // A call that does not wait reads once and needs no watcher.
+          if (wait)
+            closeWatch = watchReports(() => {
+              woken = true;
+              wake();
+            });
           let nextPoll = now() + pollMs;
           let stuck = false;
           // Memory and usage alerts fire on the transition only (remembered in
@@ -828,17 +1173,20 @@ export function createTools({ backend, client, store, sys = {} }) {
                 }
               }
             }
+            if (now() - todoCheckedAt >= TODO_CHECK_MS) await checkDue();
             if (waitingRoom.length && !byReport) {
               const maxCpu = typeof cfg.maxCpuPct === 'number' ? cfg.maxCpuPct : null;
-              const ready = low ? [] : waitingRoom.filter((id) => !(usageBlocked && usageFor(state.targets[id])));
+              const ready = low ? [] : waitingRoom.filter((td) => !(usageBlocked && usageForTodo(td)));
               const cpu = ready.length && maxCpu !== null ? await cpuPct() : null;
               const room = ready.length > 0 && (cpu === null || cpu < maxCpu);
               const key = room ? roomKey(ready) : null;
               if (room && alerts.roomAvailable !== key)
                 events.push({
                   type: 'roomAvailable',
-                  threadIds: ready,
-                  names: ready.map((id) => state.targets[id]?.name ?? null),
+                  todos: ready.map((td) => td.id),
+                  // What to pass to start_session (with todo) for each.
+                  starts: ready.map((td) => td.start ?? null),
+                  names: ready.map((td) => td.start?.name ?? td.text),
                   freeMemGb: Number(freeGb.toFixed(2)),
                   cpuPct: cpu,
                 });
@@ -886,7 +1234,7 @@ export function createTools({ backend, client, store, sys = {} }) {
               idle: false,
               stuck: true,
               stuckMin: Math.round((now() - stuckSince) / 60_000),
-              waiting: waitingList(s, [...ids, ...waitingRoom], live),
+              waiting: waitingList(s, ids, live, waitingRoom),
               events: [],
               live,
               paused,
@@ -896,8 +1244,11 @@ export function createTools({ backend, client, store, sys = {} }) {
             if (!commit()) return cancel();
             return result;
           }
-          const quiet = events.length === 0;
-          if (!commit(quiet)) return cancel();
+          // Only a wait that ran its time out is a quiet timeout. TODOs told
+          // again are no news: they do not start the stuck count over.
+          const quiet = wait && events.length === 0;
+          const repeatsOnly = events.length > 0 && events.every((e) => e.type === 'todoDue' && e.todos.every((t) => t.repeat));
+          if (!commit(wait && (quiet || repeatsOnly))) return cancel();
           return { idle: false, events, live, paused, timedOut: quiet };
         } finally {
           closeWatch();

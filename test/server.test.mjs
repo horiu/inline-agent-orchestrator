@@ -89,7 +89,7 @@ test('the real entry point lists all tools over stdio without touching Codex', a
   await new Promise((r) => child.on('exit', r));
   assert.deepEqual(
     list.result.tools.map((t) => t.name).sort(),
-    ['get_usage', 'list_sessions', 'read_reports', 'read_session', 'report', 'send_message', 'set_session_name', 'start_session', 'stop_session', 'update_session', 'wait_events'],
+    ['get_usage', 'list_sessions', 'read_reports', 'read_session', 'report', 'send_message', 'set_session_name', 'start_session', 'stop_session', 'todo', 'update_session', 'wait_events'],
   );
   assert.equal(rep.result.structuredContent.ok, true);
 });

@@ -7,7 +7,7 @@ English | [日本語](README.md)
 When you run several tasks in parallel with Claude Code or Codex, do you end up opening session after session and checking on each one in turn? Inline Agent Orchestrator turns the chat you already use into the coordinator. It starts a session for each task, keeps an eye on their progress, and comes back to you only with the decisions that need you, all at once. The screens and controls stay the same Claude Code and Codex you know.
 
 > [!NOTE]
-> This is a prototype (v0.8.0). The unit tests pass, but it has not yet been verified against real Claude Code or Codex sessions. Please run through [Verification](#verification) before relying on it.
+> This is a prototype (v0.9.0). The unit tests pass, but it has not yet been verified against real Claude Code or Codex sessions. Please run through [Verification](#verification) before relying on it.
 >
 > Messages from the tools and the skill's instructions are currently written in Japanese. The model still understands and answers in your language.
 
@@ -19,6 +19,8 @@ When you run several tasks in parallel with Claude Code or Codex, do you end up 
 - **Listed in the Claude desktop app's sidebar** — In the Claude desktop app, worker sessions start as desktop app sessions and are listed under the orchestrator. They are pinned while they run and unpinned when they finish ([Using the Claude desktop app](#using-the-claude-desktop-app))
 - **Easy on your machine and your plan limits** — There is no fixed number of sessions; new ones start while there is free memory and CPU to spare. Work stopped by a usage limit is picked up where it left off once the limit resets ([Usage limits](#usage-limits))
 - **Stalled work gets back on track** — Notices sessions that crashed or stopped midway and asks them to carry on from where they stopped
+- **Notes for later (TODOs)** — Just say something like "continue PR #7 once my usage limit resets". When the condition is met, the orchestrator asks whether to start it, and starts a worker session from it ([Things to do later (TODOs)](#things-to-do-later-todos))
+- **A list from any chat** — `/inline-agent-orchestrator:status` shows the worker sessions, the TODOs and the handoff note as tables ([Seeing the list](#seeing-the-list))
 - **Only Node.js required** — No other packages, so it stays light
 
 ## Example
@@ -122,8 +124,23 @@ When the orchestrator runs in the Claude desktop app (Code tab), worker sessions
 
 - **Listed in the sidebar** — Worker sessions are listed under the orchestrator; click one to open it and talk to it directly. The desktop app creates a worktree and a branch for each worker session
 - **Pinned while running** — Managed worker sessions are pinned while they run and unpinned when they are done. After the final report, the orchestrator asks whether to archive the finished sessions (archiving also cleans up their worktrees)
-- **When you ask remotely** — When the desktop app does not accept a start, such as when you ask through Remote Control (a phone or claude.ai), the orchestrator shows a suggestion card instead. Click the card in the desktop app on your PC to start the session
-- **Usage is not read** — The Claude desktop app shows no status line, so stopping for usage (`pauseAtPct`) has no effect there
+- **What you type is read right away** — The orchestrator does not sit waiting to monitor; it ends its turn once it has done what it can. When a worker session ends its turn, the Claude desktop app notifies the orchestrator, which then handles the reports and statuses. So whatever you type into the chat box is read at once
+- **When you ask remotely, or when a notice wakes it** — When you ask through Remote Control (a phone or claude.ai), or when a notice woke the orchestrator, the Claude desktop app does not accept a start. The orchestrator then shows a suggestion card and also keeps a TODO. Click the card in the desktop app on your PC to start the session; if you type again without clicking it, the orchestrator starts it then
+- **The tools do not read usage** — The Claude desktop app shows no status line, so stopping for usage (`pauseAtPct`) has no effect there. For "once the usage limit resets" TODOs, the orchestrator reads the plan limits through the Claude desktop app
+
+Because of how the notices work, some things arrive late:
+
+| What | When it reaches the orchestrator |
+| --- | --- |
+| A worker session's question, completion or "cannot proceed" report | Right away (the worker ends its turn there) |
+| A worker session's progress report | When that worker session ends its turn |
+| Reports while several worker sessions run | When no worker session is running any more (or when you type) |
+| Waiting for an approval or input | The Claude desktop app notifies you itself |
+| TODO conditions such as a date or a merged PR | When the orchestrator runs (when you type, or on a notice) |
+
+The pattern of the orchestrator ending its turn and running on worker sessions' notices was tried by running a 0.8.0 orchestrator that way in the Claude desktop app for a day. What 0.9.0 adds — `wait: false` on `wait_events`, TODOs and the list command — is covered by unit tests only and has not yet been tried in the real Claude desktop app ([Verification](#verification), D2–D5).
+
+A late progress report does not hold up the work; the worker session keeps going. To check on things sooner, talk to the orchestrator or open the worker session. `claude --bg` sessions and sessions started by an earlier orchestrator send no notices, so they are checked only when you type.
 
 Claude Code in the terminal keeps starting `claude --bg` background sessions. To use `claude --bg` from the Claude desktop app (ask "start it with `via: bg`"), first start `claude` in a terminal and `/login` (the desktop app's sign-in does not apply to the CLI). Background sessions do not appear in the desktop app's sidebar and cannot be pinned.
 
@@ -132,8 +149,42 @@ Claude Code in the terminal keeps starting `claude --bg` background sessions. To
 - **Send new requests to the orchestrator** — If a session is already working on the same area, the request goes there; otherwise a new session is started
 - **Check on worker sessions** — In Claude Code, list them with `claude agents` and open one with `claude attach <ID>`. In Codex, use `codex agents` and `codex resume <ID>`. You can also talk to an opened session directly
 - **Change the model or effort** — Ask something like "have fix-login think harder" or "switch to the implementation settings once the design is done"; the change takes effect from the next instruction
-- **Talk to the orchestrator** — Replies may be delayed while it is monitoring. If it's urgent, stop the monitoring first with the stop button (Esc in Claude Code), then type. Nothing that happens in the meantime is lost; it is picked up on the next round of monitoring
-- **Stop monitoring** — Stop the monitoring with the stop button (Esc in Claude Code), then say "stop monitoring". The worker sessions keep running, and saying "check on them" resumes monitoring. To stop the worker sessions too, say "stop everything"
+- **Talk to the orchestrator** — In the Claude desktop app, what you type is always read right away. In Claude Code in the terminal and in Codex, what you type while it is monitoring is not read until the monitoring next returns (up to `watchIntervalMin`, 30 minutes by default). If it's urgent, stop the monitoring first with the stop button (■; Esc in Claude Code in the terminal), then type. Nothing that happens in the meantime is lost; it is picked up on the next round of monitoring. The orchestrator mentions this when it starts monitoring
+- **Stop monitoring** — Say "stop monitoring" (in Claude Code in the terminal and in Codex, stop the monitoring with the stop button first). The worker sessions keep running, and saying "check on them" resumes monitoring. To stop the worker sessions too, say "stop everything"
+- **See the list** — From any chat, type `/inline-agent-orchestrator:status` to see the worker sessions, the TODOs and the handoff note as tables ([Seeing the list](#seeing-the-list))
+
+### Things to do later (TODOs)
+
+You can have the orchestrator note down work that stopped at a usage limit, or work you want to run later. No numbers or fixed wording are needed.
+
+```text
+👤 Let's do this later. Once my usage limit resets, continue PR #7.
+🤖 Saved as TODO 3 (condition: once the usage limit resets).
+
+   (after the limit resets, when you type or a worker session's notice arrives)
+
+🤖 The condition is met. Start "continue PR #7" (TODO 3)?
+👤 Start number 3
+```
+
+- **Conditions** — Any time, once the usage limit resets, once PR #N is merged, once a new version is running (loaded) or after a restart, or at a date and time. The orchestrator checks them whenever it runs (when you type, on a notice, while monitoring). A merged PR is checked with `gh` (GitHub CLI)
+- **The orchestrator adds its own** — When a worker session stops at a usage limit, when a start is held back for lack of room on the PC, when it shows a suggestion card, or when something needs your check (for example, what to verify after restarting the Claude desktop app), it adds a TODO. Work you already asked for (continuing after a usage limit, waiting for room, a card) goes ahead without asking once the condition is met
+- **Starting one** — "Start number 2" or "do that" turns the TODO into a request and starts a worker session (or, for a session you put on hold, asks that session to continue). When the worker session is done, the TODO is marked done too
+- **Where it is kept** — In `state.json` in the data folder, so it carries over when you start the orchestrator in a new chat. The handoff note `handoff.md` lists them too
+
+### Seeing the list
+
+From any chat, this command shows the list. It doesn't have to be the orchestrator's chat (in Claude Code in the terminal, an orchestrator that is monitoring would not read it). It only shows; it changes nothing.
+
+```text
+/inline-agent-orchestrator:status
+```
+
+- **Worker sessions** — Name, state (working, waiting for a decision, waiting for approval, done, …), branch, PR, what it waits for, and how to open it. In the Claude desktop app, the name links to the session
+- **TODOs** — What to do, the condition, and whether it is met
+- **Handoff note** — When `handoff.md` was updated, and its gist
+
+Finished worker sessions and done TODOs are hidden by default; type `/inline-agent-orchestrator:status all` to show them. Codex has no such command; in another chat, ask "show the list with session-manager's list_sessions".
 
 ### When it's done
 
@@ -155,9 +206,9 @@ You can also point to another location with the `CSM_HOME` environment variable.
 | `minFreeMemGb` | `2` | No new sessions are started while free memory (GB) is below this value |
 | `maxCpuPct` | `90` | No new sessions are started while CPU usage (%, averaged over one second) is at or above this value. `null` ignores the CPU |
 | `pauseAtPct` | Claude Code: `null`<br>Codex: `95` | When usage reaches this percentage, no new sessions are started and running sessions are stopped. `null` never stops for usage. A number applies to both; write `{ "claude": 90 }` to change one only ([Usage limits](#usage-limits)) |
-| `watchIntervalMin` | `30` | How often the orchestrator checks in when nothing happens (minutes, max 60) |
-| `pollSec` | `5` | How often session status is checked (seconds). Reports are picked up right away, without waiting for this interval |
-| `stopWhenStuckMin` | `120` | End the monitoring when nothing can move forward (every session waits for a decision, an approval or input, or for free memory or CPU) for this many minutes. Waiting for the usage limit to reset does not count. `null` never ends it ([When nothing can move forward](#when-nothing-can-move-forward)) |
+| `watchIntervalMin` | `30` | How often the orchestrator checks in when nothing happens (minutes, max 60). Claude Code in the terminal and Codex only (in the Claude desktop app it does not wait) |
+| `pollSec` | `5` | How often session status is checked while monitoring (seconds). Reports are picked up right away, without waiting for this interval |
+| `stopWhenStuckMin` | `120` | End the monitoring when nothing can move forward (every session waits for a decision, an approval or input, or for free memory or CPU) for this many minutes. Waiting for the usage limit to reset does not count. `null` never ends it. Claude Code in the terminal and Codex only ([When nothing can move forward](#when-nothing-can-move-forward)) |
 | `profiles` | See below | Model and effort for each kind of task |
 | `defaults.model` / `defaults.effort` | — | Model and effort when no profile is used (each tool's default when omitted) |
 
@@ -217,6 +268,8 @@ To share the reporting rules with sessions you open yourself, append the content
 
 ### Monitoring interval and usage
 
+The monitoring described here is that of Claude Code in the terminal and Codex. In the Claude desktop app, the orchestrator does not sit waiting; it reads the state once each time a worker session's notice or your message wakes it ([Using the Claude desktop app](#using-the-claude-desktop-app)).
+
 While monitoring, it is the MCP server — not the model — that checks session status. Whenever a report arrives or a status changes, the orchestrator responds right away.
 
 Reports are picked up as soon as they are written (through file change notifications). Where notifications don't arrive (network drives, for example), reports are still read again every `pollSec`, so nothing is missed. A status check (`claude agents --json` in Claude Code) takes about 0.25 seconds, which at every 5 seconds is about 5% of one CPU core. Since the work happens in real time, the default favors low delay.
@@ -225,7 +278,7 @@ When nothing happens, the orchestrator checks in every `watchIntervalMin` minute
 
 ### When nothing can move forward
 
-When every session is waiting for a decision, an approval or input, or for free memory or CPU, and nothing can move forward for `stopWhenStuckMin` (2 hours by default), the orchestrator ends the monitoring by itself, so that it doesn't keep using usage and CPU while waiting for nothing. When only sessions waiting for your decision are left, it also waits this long before ending. Waiting for the usage limit to reset does not count, since the work resumes once it does. A report, a status change or an instruction from the orchestrator starts the count over.
+In Claude Code in the terminal and in Codex, when every session is waiting for a decision, an approval or input, or for free memory or CPU, and nothing can move forward for `stopWhenStuckMin` (2 hours by default), the orchestrator ends the monitoring by itself, so that it doesn't keep using usage and CPU while waiting for nothing. When only sessions waiting for your decision are left, it also waits this long before ending. Waiting for the usage limit to reset does not count, since the work resumes once it does. A report, a status change or an instruction from the orchestrator starts the count over.
 
 When it ends the monitoring, the orchestrator:
 
@@ -234,6 +287,8 @@ When it ends the monitoring, the orchestrator:
 - Sends a short notification, if a notification tool is available
 
 After that, type anything and the orchestrator reads the handoff note and the latest state, answers you, and goes back to monitoring, even if you don't say "check on them". If you stopped it with "stop monitoring" or "stop everything", it doesn't go back until you say "check on them" or ask for new work.
+
+In the Claude desktop app this does not apply, since the orchestrator does not hold its turn. It asks waiting questions together as soon as it learns of them, and rewrites the handoff note at the end of any turn in which the managed sessions, decisions or TODOs changed.
 
 The orchestrator can't compact its own conversation (`/compact` is a command you type). When the conversation gets long, use the handoff note instead: ask it to "write a handoff note", then start manage-sessions in a new session, and it picks up from the note.
 
@@ -332,11 +387,13 @@ Neither Claude Code nor Codex ships a tool that lets the AI operate other sessio
 | Starting, messaging, stopping | The MCP server | The orchestrator, with the desktop app's tools (`mcp__ccd_*`) | The MCP server |
 | If you close the orchestrator | Worker sessions keep running | Worker sessions keep running | Worker sessions keep running |
 | Messages to a running session | Processed after the current turn (interrupting is also possible) | Held by the desktop app and delivered after the turn ends | Held by the MCP server and delivered after the turn ends |
+| Monitoring | Waits within the orchestrator's turn (`wait_events`) | Does not wait. Reads once whenever a Claude desktop app notice or your message wakes it (`wait_events` with `wait: false`) | Waits within the orchestrator's turn (`wait_events`) |
 | How usage is read | From app-server | Not read | From `usage.json`, written by the status line |
 
 - The MCP server cannot call the desktop app's tools, so in the Claude desktop app `start_session` returns the values to pass to the desktop app; the orchestrator starts the session with the desktop app's `start_session` and records it with `update_session`. Status comes from the session's row in `claude agents --json` (busy, idle). The app's session ID (`local_…`) differs from the Claude Code session ID, so the row is first found by title and then linked by the session ID that the worker's `report` carries
 - Reports are written to a file by the `report` tool on the dedicated `session-report` connection and read by the orchestrator. In both Claude Code and Codex, this connection exposes only `report`, and the worker's `session-manager` is disabled. Worker sessions in the Claude desktop app cannot be given a connection at start, so they use `report` from the plugin's `session-manager` (their request tells them not to use its other tools). App sessions cannot be given allowed tools at start, so a plugin hook (`hooks/hooks.json`, PreToolUse) allows this `report` alone without a prompt (it only appends to the report file)
-- While a task is held back for lack of free memory, CPU or usage, the watch keeps going and checks them, then tells the orchestrator to start it once there is room
+- A task held back for lack of free memory, CPU or usage is kept as a "once the PC has room" TODO. While there is one, the watch keeps going and checks them, then tells the orchestrator to start it once there is room
+- TODOs are kept under `todos` in `state.json`. The MCP server checks the conditions it can (a date, the version, a restart, room on the PC, a merged PR through `gh pr view`, and the usage when it can read it); the usage in the Claude desktop app is checked by the orchestrator with the desktop app's tool (`mcp__ccd_session_mgmt__get_usage`). Records from 0.8.0 and earlier for work waiting for resources (`wait:<name>`) and suggestion cards (`card:<name>`) move into TODOs when first read
 - Claude Code usage cannot be read from the CLI; the values passed to the status line are the only official source. That is why a status line is set up when you use `pauseAtPct`. Your previous status line is saved and its output keeps being shown. The Claude desktop app shows no status line, so no usage is recorded there
 - Whether a Claude Code worker session was stopped by a usage limit is inferred from wording such as "Usage limit reached" near the end of `claude logs` (`usageLimit` in `read_session`). The wording is not a published interface, so a change to it would go unnoticed
 - Claude Code worker sessions create a worktree under `.claude/worktrees/` before editing and work inside it (the default behavior of agent view)
@@ -346,15 +403,16 @@ Neither Claude Code nor Codex ships a tool that lets the AI operate other sessio
 
 | Tool | Used by | Description | Codex (app-server) | Claude Code (CLI) |
 | --- | --- | --- | --- | --- |
-| `list_sessions` | Orchestrator | List managed sessions, or all sessions, with their status | `thread/read`, `thread/list` | `claude agents --json` |
+| `list_sessions` | Orchestrator (any session, for the list command) | List managed sessions, or all sessions, with their status. For managed sessions it also returns the TODOs (whether each condition is met) and the start of the handoff note | `thread/read`, `thread/list` | `claude agents --json` |
 | `read_session` | Orchestrator | Recent exchanges | `thread/turns/list` | `claude logs` |
 | `start_session` | Orchestrator | Start a session with a profile (or a model and effort), name it, and send the first request. Without enough memory, CPU or usage to spare, it does not start and returns the reason. In the Claude desktop app it does not start, and returns the values to pass to the desktop app | `thread/start`, `turn/start` | `claude --bg` |
 | `send_message` | Orchestrator | Send after the current turn to a running session, or as a continuation to a stopped one. Can also change the model or effort | `thread/queue/add`, `turn/start`, `turn/steer` | Held, then `claude --resume --bg` |
 | `stop_session` | Orchestrator | Stop the running turn | `turn/interrupt` | `claude stop` |
 | `set_session_name` | Orchestrator | Rename a session | `thread/name/set` | Record only |
 | `get_usage` | Orchestrator | Usage, free memory, CPU, number of running sessions, whether a new one may start (usage counts only with `pauseAtPct`), how sessions are started (`launcher`), the list of profiles, and this tool's versions (running, installed and newest) | `account/rateLimits/read` | `usage.json` |
-| `update_session` | Orchestrator | Update the record (status, notes, on hold, waiting for resources, adding a desktop app session) | `state.json` | `state.json` |
-| `wait_events` | Orchestrator | Wait for status changes, reports (as soon as they are written), approval requests, low memory, usage limits being hit (with `pauseAtPct`) or reset, and room to start a task held back for resources. Ends with a list of what is waiting when nothing can move forward for long | `thread/read` | `claude agents --json` |
+| `update_session` | Orchestrator | Update the record (status, notes, on hold, adding a Claude desktop app session, the TODO it works on). Marking it done marks its TODOs done too | `state.json` | `state.json` |
+| `todo` | Orchestrator | Add, change, complete or remove a TODO | `state.json` | `state.json` |
+| `wait_events` | Orchestrator | Wait for status changes, reports (as soon as they are written), approval requests, low memory, usage limits being hit (with `pauseAtPct`) or reset, room to start a task held back for resources, and TODOs whose condition is met. Ends with a list of what is waiting when nothing can move forward for long. With `wait: false` it returns at once with what is known | `thread/read` | `claude agents --json` |
 | `read_reports` | Orchestrator | Read reports | `reports.jsonl` | `reports.jsonl` |
 | `report` | Worker session | Report to the orchestrator | `reports.jsonl` | `reports.jsonl` |
 
@@ -365,14 +423,16 @@ Every call follows the official documentation (for Codex, `learn.chatgpt.com/doc
 ## Limitations
 
 - **It does not approve on your behalf** — When a worker session is waiting for approval or input, the orchestrator only tells you how to open it. With Claude Code's default (`acceptEdits`), running commands waits for confirmation
-- **Monitoring happens within the orchestrator's turn** — When no sessions are running, or nothing can move forward for long, monitoring ends and resumes the next time you talk to the orchestrator
+- **In Claude Code in the terminal and in Codex, monitoring happens within the orchestrator's turn** — What you type while it monitors is not read for up to `watchIntervalMin` minutes (stop it with the stop button and it is read at once). When no sessions are running, or nothing can move forward for long, monitoring ends and resumes the next time you talk to the orchestrator
+- **In the Claude desktop app, progress reports arrive late** — A progress report arrives when the worker session ends its turn, and while several worker sessions run, when none is running any more ([Using the Claude desktop app](#using-the-claude-desktop-app))
+- **Nothing runs on a timer** — TODOs that wait for a date or a merged PR are checked when the orchestrator runs (when you type, on a notice, while monitoring)
 - **Only free memory and CPU are watched** — Individual processes, such as how many dev servers are running, are not counted. Put any rules you need in `local-rules.md`
 - **Codex workers use a dedicated reporting connection** — For sessions started by this tool, only `session-report`'s `report` is pre-approved. `session-manager` is disabled within that worker; other MCP servers' approval settings and the sandbox are unchanged. Reporting settings are reapplied when the orchestrator resumes the worker. If an older session is still connected to another terminal or manager, close that connection and let the shared daemon unload it before resuming
 - **Messages to a running Claude Code session arrive after its turn ends** — Messages held for a session that is then stopped are discarded
 - **Reports are exchanged only within the same machine**
 - **Built on experimental features** — Parts of the Codex app-server and Claude Code's agent view are experimental, and their behavior may change between versions
 - **`claude --bg` sessions do not appear in the Claude desktop app** — They are not listed and cannot be pinned. In the Claude desktop app, worker sessions start as desktop app sessions
-- **In the Claude desktop app, worker sessions can start only within a turn you typed** — The orchestrator keeps watching within that turn and starts the next tasks there. When it resumes from a desktop app notice after the watch stopped, it shows suggestion cards instead
+- **In the Claude desktop app, worker sessions can start only within a turn you typed** — Work to start when a notice woke the orchestrator (waiting for room, a TODO whose condition is met) gets a suggestion card and a TODO, and starts the next time you type
 - **Whether Claude Code worker sessions continue by themselves when the limit resets is unverified** — If they don't, the orchestrator asks them to carry on once it is back
 - **A new working folder must first be trusted on the PC (Claude Code)** — `claude --bg` cannot show the trust prompt. Trust is recorded per repository; trusting a parent folder does not cover the repositories under it. When you use the orchestrator remotely (Remote Control, a phone), use an already trusted repository as the working folder
 
@@ -397,13 +457,15 @@ Cleanup: `claude stop <ID>`, `claude rm <ID>`, `update_session` (remove)
 </details>
 
 <details>
-<summary>Claude desktop app (D1–D3)</summary>
+<summary>Claude desktop app (D1–D5)</summary>
 
 | # | Check | Steps | If it fails |
 | --- | --- | --- | --- |
 | D1 | Starting and pinning | In the Claude desktop app's Code tab, run `/inline-agent-orchestrator:manage-sessions` → ask "start a worker session named 'trial' with the request 'count the files and send the result with report'" → does 'trial' appear under the orchestrator in the sidebar, pinned? | Check that `launcher` in `get_usage` is `app` |
-| D2 | Report and status | Does `wait_events` receive the `report` (done), and is the pin removed? Does `list_sessions` show 'trial' as `idle`? | Check that `claude agents --json` has a row for 'trial' (kind `interactive`) |
-| D3 | The next task | Ask for another task → does a new worker session start? | If the desktop app refuses the start, check that a suggestion card appears |
+| D2 | Not holding the turn | After the start, does the orchestrator end its turn at once (the chat box is free)? Type something while 'trial' works → is it answered at once? | Check in the transcript that the orchestrator does not call `wait_events` without `wait: false` |
+| D3 | Notice and report | When 'trial' finishes, does a notice wake the orchestrator, does `wait_events` (`wait: false`) receive the `report` (done), and is the pin removed? Does `list_sessions` show 'trial' as `idle`? | Check that `claude agents --json` has a row for 'trial' (kind `interactive`) |
+| D4 | The next task | Ask for another task → does a new worker session start? | If the desktop app refuses the start, check that a suggestion card appears and a TODO is kept |
+| D5 | TODOs and the list | Say "fix the README typo later, any time is fine" → is it kept as a TODO? In another chat, `/inline-agent-orchestrator:status` → do the tables of worker sessions and TODOs appear? "Start number 1" → does a worker session start, and is the TODO done when it finishes? | Check `todos` in `~/.claude/session-manager-mcp/state.json` |
 
 Cleanup: archive the session in the desktop app, `update_session` (remove)
 
@@ -439,7 +501,7 @@ Cleanup: `codex archive <ID>`, `update_session` (remove), and `codex app-server 
 
 The following information helps track down the cause.
 
-- The step that failed (C1–C6, D1–D3, V1–V5) and the output of `claude --version` or `codex --version`, and `node --version`
+- The step that failed (C1–C6, D1–D5, V1–V5) and the output of `claude --version` or `codex --version`, and `node --version`
 - The error message, or the full output of the command
 - `state.json`, `reports.jsonl`, and `config.json` from the data folder; for Claude Code, also `worker-mcp.json`, `usage.json`, and `statusline.json`
 - For Claude Code, the output of `claude plugin list` run in a terminal; for Codex, the `[mcp_servers.session-manager]` section of `config.toml`
@@ -457,12 +519,14 @@ To release a new version, set the same version in `package.json` and `.claude-pl
 | `src/server.mjs` | MCP server (stdio, JSON-RPC 2.0) |
 | `src/tools.mjs` | Tools, limit checks, monitoring |
 | `src/version.mjs` | Compares the running version, the one on disk and the newest one on GitHub |
+| `src/todos.mjs` | Checks TODO conditions and moves records from 0.8.0 and earlier |
 | `src/backends/` | Implementations for Codex (app-server) and Claude Code (CLI) |
 | `src/setup.mjs` | Setup script (Codex registration and skill installation, Claude Code status line) |
 | `src/allow-report.mjs` / `hooks/hooks.json` | Hook that lets Claude desktop app worker sessions call `report` without a prompt |
 | `src/claude-statusline.mjs` | Status line that records Claude Code usage |
 | `src/appserver.mjs` / `src/ws.mjs` | Codex app-server client (Node.js on Windows cannot use Unix domain sockets, so it talks WebSocket through `codex app-server proxy`) |
 | `skills/manage-sessions/` | The orchestrator's instructions (skill) |
+| `skills/status/` | The list command (`/inline-agent-orchestrator:status`) |
 | `.claude-plugin/` | Claude Code plugin and marketplace definitions |
 | `test/` | Unit tests with mocks of the Codex and Claude Code CLIs and app-server |
 

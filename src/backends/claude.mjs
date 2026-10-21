@@ -15,12 +15,11 @@
 // (src/claude-statusline.mjs) records `rate_limits` into usage.json. The
 // desktop app draws no status line, so there usage.json is never written.
 
-import { spawn } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ToolError, iso, tail } from './common.mjs';
+import { ToolError, iso, runCli, tail } from './common.mjs';
 
 const SERVER_PATH = fileURLToPath(new URL('../server.mjs', import.meta.url));
 const SETUP_PATH = fileURLToPath(new URL('../setup.mjs', import.meta.url)).replaceAll('\\', '/');
@@ -80,31 +79,6 @@ export function usageLimitLine(log) {
   return lines.findLast((l) => USAGE_LIMIT.test(l))?.trim() ?? null;
 }
 
-// Runs the CLI without a shell (arguments contain prompts and JSON).
-// claudePath: "claude" / an absolute path to claude(.exe), or an argv prefix.
-export function runClaude(claudePath, args, { cwd, timeoutMs = 60000 } = {}) {
-  const [cmd, ...prefix] = Array.isArray(claudePath) ? claudePath : [claudePath];
-  return new Promise((resolve, reject) => {
-    const child = spawn(cmd, [...prefix, ...args], { cwd, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
-    let stdout = '';
-    let stderr = '';
-    const timer = setTimeout(() => {
-      child.kill();
-      reject(new Error(`claude ${args[0]}: timed out after ${timeoutMs} ms`));
-    }, timeoutMs);
-    child.stdout.on('data', (d) => (stdout += d));
-    child.stderr.on('data', (d) => (stderr += d));
-    child.on('error', (err) => {
-      clearTimeout(timer);
-      reject(err);
-    });
-    child.on('close', (code) => {
-      clearTimeout(timer);
-      resolve({ code, stdout, stderr });
-    });
-  });
-}
-
 function mapEntry(e) {
   if (!e) return { status: 'notLoaded', activeFlags: [] };
   // Desktop app and terminal sessions: status only.
@@ -117,7 +91,8 @@ function mapEntry(e) {
   return { status: 'idle', activeFlags: [] }; // done / stopped
 }
 
-export function claudeBackend({ store, claudePath = 'claude', permissionMode = 'acceptEdits', run = runClaude, now = () => Date.now() }) {
+// claudePath: "claude" / an absolute path to claude(.exe), or an argv prefix.
+export function claudeBackend({ store, claudePath = 'claude', permissionMode = 'acceptEdits', run = runCli, now = () => Date.now() }) {
   let cache = null;
   let ticking = false;
 
