@@ -34,7 +34,7 @@ Claude Code の作業の会話は、監視役がデスクトップ app で動い
 
 ## 1. 始める
 
-1. `local-rules.md` があれば読む。状態のフォルダに `handoff.md`（前の見回りが止まったときの引き継ぎメモ）があれば読み、そこに書いた続きから始める（管理中の会話・決めたこと・次にやること）
+1. `local-rules.md` があれば読む。状態のフォルダに `handoff.md`（前の見回りが止まったときの引き継ぎメモ）があれば読み、そこに書いた続きから始める（管理中の会話・決めたこと・次にやること）。3. の `list_sessions` と食い違えば `list_sessions` を正とし、管理中の会話が全部 `done` なら参考にとどめる
 2. この会話の名前を `<リポジトリ名> Manager` にする（例: wakarium で始めたら `wakarium Manager`。前の会話から続けていて、`<リポジトリ名> Manager` がもう付いていれば飛ばす）
    - リポジトリ名: 作業フォルダの git リポジトリの名前。シェルで `git rev-parse --path-format=absolute --git-common-dir` を読み、その親フォルダの名前にする（worktree（`.claude/worktrees/…` など）の中でも、worktree のフォルダ名ではなく元のリポジトリの名前になる）。git の外なら作業フォルダの名前
    - Codex: シェルで自分の会話の ID を読み（PowerShell は `$env:CODEX_THREAD_ID`、ほかは `echo $CODEX_THREAD_ID`）、`set_session_name`（threadId にその ID、name `<リポジトリ名> Manager`）。ID が空、または失敗したら飛ばす（利用者には言わない）
@@ -126,6 +126,7 @@ app が起こすのを断ったとき（利用者がリモート（Remote Contro
 - 見回りが利用者に止められた（打ち切られた）ら、利用者の文に答えてから見回りに戻る。ただし、やめる指示なら戻らない（下の「やめるとき」）
 - `wait_events` は1つずつ呼ぶ（並べて呼ぶと前の呼び出しは `cancelled` で打ち切られる。打ち切られた分の出来事は次の呼び出しで返る。ただし Claude Code の `queuedDelivered` は返らないことがあるので、届いたかは `list_sessions` で見る: `managed.queued` が 0 で、会話が active になっていれば届いている）
 - 報告は書かれるとすぐ `wait_events` が返す（状態は `pollSec` ごと）
+- 見回りを止めるとき（`idle`・`stuck`・やめる指示のどれでも）は、毎回 `handoff.md` を今の状態に書き直す（中身は下の「見回りが止まったとき」の 1。古いメモで続きを始めないため）
 - 監視役は自分で会話を圧縮できない（`/compact` は利用者のコマンド）。会話が長くなったと利用者に言われたら、`handoff.md` を書き（下の「見回りが止まったとき」の 1）、新しい会話で manage-sessions を始めれば続きから進められると伝える
 
 ### 見回りが止まったとき（`stuck: true`）

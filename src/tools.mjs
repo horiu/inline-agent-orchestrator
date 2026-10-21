@@ -16,6 +16,10 @@ const ACTIVE_TARGET = new Set(['running', 'waiting_user', 'paused', 'paused_usag
 // An active session with one of these flags waits for the user, not working.
 const WAITS_FOR_USER = { waitingOnApproval: 'approval', waitingOnUserInput: 'input' };
 const QUESTION_CHARS = 300;
+const QUESTIONS_KEPT = 3;
+// A stuck count saved longer ago than this is from a watch that is no longer
+// running (the manager was closed or stopped): a new watch starts over.
+const STUCK_GAP_MS = 10 * 60_000;
 const RULES_FILE = { codex: 'AGENTS.md', claude: 'CLAUDE.md' };
 const CPU_SAMPLE_MS = 1000;
 
@@ -101,14 +105,16 @@ export function createTools({ backend, client, store, sys = {} }) {
     store.saveState(s);
   }
 
-  // What each stuck session waits for: name, state, the gist of its last
-  // question and how to open it.
+  // What each stuck session waits for: name, state, the gist of its
+  // questions since its last other report, and how to open it.
   function waitingList(state, ids, live) {
     const byName = namesToIds(state);
     const questions = new Map();
     for (const r of store.peekReports({ all: true }).reports) {
       const id = r.threadId ?? (r.from ? byName.get(r.from) ?? null : null);
-      if (r.kind === 'question' && id) questions.set(id, String(r.text ?? '').slice(0, QUESTION_CHARS));
+      if (!id) continue;
+      if (r.kind !== 'question') questions.delete(id);
+      else questions.set(id, [...(questions.get(id) ?? []), String(r.text ?? '').slice(0, QUESTION_CHARS)].slice(-QUESTIONS_KEPT));
     }
     const out = [];
     for (const id of ids) {
@@ -128,7 +134,7 @@ export function createTools({ backend, client, store, sys = {} }) {
         status: t.status,
         liveStatus: l?.status ?? null,
         waitingFor,
-        question: questions.get(id) ?? null,
+        questions: questions.get(id) ?? [],
         note: t.note ?? null,
         open: t.status === 'pending' ? null : be.openCommand(id, t),
       });
@@ -600,7 +606,9 @@ export function createTools({ backend, client, store, sys = {} }) {
         const aborted = signal ? new Promise((r) => signal.addEventListener('abort', r, { once: true })) : null;
         const cfg = store.config();
         const pollMs = cfg.pollSec * 1000;
-        const stuckLimitMs = typeof cfg.stopWhenStuckMin === 'number' && cfg.stopWhenStuckMin > 0 ? cfg.stopWhenStuckMin * 60_000 : null;
+        // "120" written by hand still counts, as for pauseAtPct.
+        const stuckMin = typeof cfg.stopWhenStuckMin === 'string' && cfg.stopWhenStuckMin.trim() !== '' ? Number(cfg.stopWhenStuckMin) : cfg.stopWhenStuckMin;
+        const stuckLimitMs = typeof stuckMin === 'number' && Number.isFinite(stuckMin) && stuckMin > 0 ? stuckMin * 60_000 : null;
         const maxMin = Math.min(Math.max(Number(cfg.watchIntervalMin) || DEFAULT_CONFIG.watchIntervalMin, 0), WATCH_INTERVAL_MAX_MIN);
         const limitMin = intervalMin > 0 ? Math.min(intervalMin, maxMin) : maxMin;
         const deadline = now() + limitMin * 60_000;
@@ -657,7 +665,9 @@ export function createTools({ backend, client, store, sys = {} }) {
         // no session works, none waits for the usage limit and no message
         // waits to be delivered.
         const parseAt = (iso) => (iso ? Date.parse(iso) : NaN);
-        let stuckSince = Number.isFinite(parseAt(state.stuckSince)) ? parseAt(state.stuckSince) : null;
+        const savedAt = parseAt(state.stuckCheckedAt);
+        let stuckSince =
+          Number.isFinite(parseAt(state.stuckSince)) && Number.isFinite(savedAt) && now() - savedAt <= STUCK_GAP_MS ? parseAt(state.stuckSince) : null;
         let usageBlocked = false;
         const nothingMoves = (s, live) => {
           const working = ids.some((id) => live[id]?.status === 'active' && !(live[id].activeFlags ?? []).some((f) => WAITS_FOR_USER[f]));
@@ -682,6 +692,7 @@ export function createTools({ backend, client, store, sys = {} }) {
           }
           s.alerts = alerts;
           s.stuckSince = keepStuck && stuckSince !== null ? new Date(stuckSince).toISOString() : null;
+          s.stuckCheckedAt = s.stuckSince ? new Date(now()).toISOString() : null;
           if (reportsOffset !== null) s.reportsOffset = reportsOffset;
           store.saveState(s);
           return true;
@@ -719,6 +730,8 @@ export function createTools({ backend, client, store, sys = {} }) {
           // state.json), so a lasting condition does not wake the manager on
           // every call.
           let usageChecked = false;
+          // A round started by a report only reads it (no CPU sample).
+          let byReport = false;
           for (;;) {
             if (stale()) return cancel();
             woken = false;
@@ -782,7 +795,7 @@ export function createTools({ backend, client, store, sys = {} }) {
                 }
               }
             }
-            if (waitingRoom.length) {
+            if (waitingRoom.length && !byReport) {
               const maxCpu = typeof cfg.maxCpuPct === 'number' ? cfg.maxCpuPct : null;
               const ready = low ? [] : waitingRoom.filter((id) => !(usageBlocked && usageFor(state.targets[id])));
               const cpu = ready.length && maxCpu !== null ? await cpuPct() : null;
@@ -825,7 +838,8 @@ export function createTools({ backend, client, store, sys = {} }) {
             // reads that could outlast the client's tool timeout.
             if (now() >= deadline) break;
             // Woken by a report: read it without waiting for the next poll.
-            if (why === 'report') continue;
+            byReport = why === 'report';
+            if (byReport) continue;
             nextPoll = now() + pollMs;
             live = await liveStatuses(ids, store.state().targets);
             diff(live);

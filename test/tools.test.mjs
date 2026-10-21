@@ -716,7 +716,10 @@ test('the watch ends as stuck when every session waits for the user for stopWhen
   fake.addThread('q', { status: { type: 'idle' } });
   store.updateTarget('a', { name: 'A', status: 'running', lastSeen: { status: 'active', activeFlags: ['waitingOnApproval'] } });
   store.updateTarget('q', { name: 'Q', status: 'waiting_user', lastSeen: { status: 'idle', activeFlags: [] } });
+  await tools.report.handler({ kind: 'question', text: '前の質問（答え済み）', from: 'Q' });
+  await tools.report.handler({ kind: 'progress', text: '続けます', from: 'Q' });
   await tools.report.handler({ kind: 'question', text: 'AとBどちらにしますか？', from: 'Q' });
+  await tools.report.handler({ kind: 'question', text: '名前は？', from: 'Q' });
   await tools.read_reports.handler({});
   const first = await tools.wait_events.handler({});
   assert.equal(first.timedOut, true);
@@ -727,10 +730,10 @@ test('the watch ends as stuck when every session waits for the user for stopWhen
   assert.equal(r.timedOut, false);
   assert.ok(clock >= 12_000 && clock < 15_000, `ended at ${clock}`);
   assert.deepEqual(
-    r.waiting.map((x) => [x.name, x.waitingFor, x.question, x.open]),
+    r.waiting.map((x) => [x.name, x.waitingFor, x.questions, x.open]),
     [
-      ['A', 'approval', null, 'codex resume a'],
-      ['Q', 'question', 'AとBどちらにしますか？', 'codex resume q'],
+      ['A', 'approval', [], 'codex resume a'],
+      ['Q', 'question', ['AとBどちらにしますか？', '名前は？'], 'codex resume q'],
     ],
   );
   assert.equal(store.state().stuckSince, null, 'the next watch counts again');
@@ -808,4 +811,44 @@ test('a watch cancelled by the user restarts the stuck count', async () => {
   controller.abort();
   assert.equal((await first).cancelled, true);
   assert.equal(store.state().activityAt, new Date(0).toISOString());
+});
+
+test('a stuck count left by a watch that stopped long ago starts over; a string setting counts', async () => {
+  setup({ stopWhenStuckMin: '0.05' });
+  fake.addThread('a', { status: { type: 'active', activeFlags: ['waitingOnApproval'] } });
+  store.updateTarget('a', { name: 'A', status: 'running', lastSeen: { status: 'active', activeFlags: ['waitingOnApproval'] } });
+  const s = store.state();
+  clock = 3 * 3600_000;
+  s.stuckSince = new Date(0).toISOString();
+  s.stuckCheckedAt = new Date(60_000).toISOString();
+  store.saveState(s);
+  const r = await tools.wait_events.handler({});
+  assert.equal(r.stuck, true, '"0.05" is 3 seconds');
+  assert.equal(r.stuckMin, 0, 'counted from this call, not from the old watch');
+});
+
+test('a message waiting to be delivered or a session added meanwhile is not stuck', async () => {
+  setup({ stopWhenStuckMin: 2 / 60 });
+  fake.addThread('a', { status: { type: 'active', activeFlags: ['waitingOnApproval'] } });
+  store.updateTarget('a', { name: 'A', status: 'running', queue: ['続き'], lastSeen: { status: 'active', activeFlags: ['waitingOnApproval'] } });
+  assert.equal((await tools.wait_events.handler({})).timedOut, true, 'a queued message');
+  store.updateTarget('a', { queue: [] });
+  let added = false;
+  const client = new AppServerClient({ connector: fake.connector() });
+  const t = createTools({
+    client,
+    store,
+    sys: {
+      freemem: () => 8 * GB,
+      now: () => clock,
+      sleep: async (ms) => {
+        clock += ms;
+        if (!added) {
+          added = true;
+          store.updateTarget('local_new', { name: 'N', status: 'running', via: 'app' });
+        }
+      },
+    },
+  }).tools;
+  assert.equal((await t.wait_events.handler({})).timedOut, true, 'a session added while the watch waits');
 });
