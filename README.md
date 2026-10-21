@@ -14,7 +14,7 @@ Claude Code や Codex で作業を並行して進めるとき、セッション�
 - **いつもの画面のまま** — 専用のアプリや画面はありません。Claude Code・Codex をそのまま使います。tmux や常駐のサービスも要りません
 - **作業ごとにセッションを用意** — 頼んだ内容を作業ごとに分け、それぞれに名前・作業フォルダ・モデルを決めて、別々のセッションで進めます
 - **質問はまとめて、おすすめ付きで** — 各セッションからの「どうしますか？」を集め、選択肢とおすすめを添えて一度に聞きます。返事をすれば、それぞれの作業が続きから進みます
-- **PC と利用枠に無理をさせない** — 同時に動かす数、空きメモリ、5時間と週ごとの利用枠を見ながら進めます。上限が近づいたら一時停止し、枠が戻れば再開します
+- **PC と利用枠に無理をさせない** — 同時に動かす数と空きメモリを見ながら進めます。利用枠の上限に達して止まった作業は、枠が戻ったあとに続きから再開させます（[利用枠の上限](#利用枠の上限)）
 - **止まった作業も立て直す** — エラーで落ちたセッションや、途中で止まったセッションに気づき、続きから進めるよう頼み直します
 - **入れるのは Node.js だけ** — ほかのパッケージを必要とせず、軽く動きます
 
@@ -65,7 +65,7 @@ claude plugin install inline-agent-orchestrator --marketplace horiu/inline-agent
 
 VS Code では、チャット欄に `/plugins` と入力して開く画面からもインストールできます。Marketplaces タブで `horiu/inline-agent-orchestrator` を追加し、Plugins タブでインストールします。
 
-初めて使うときに、使用量を読み取るための status line の設定を求められます。許可すると設定され、現在の status line の表示はそのまま残ります。
+Claude Code では、既定で利用枠を読まずに動きます（[利用枠の上限](#利用枠の上限)）。`pauseAtPct` を設定してターミナルで使う場合だけ、使用量を読み取るための status line の設定を求められます。許可すると設定され、現在の status line の表示はそのまま残ります。デスクトップアプリでは status line が表示されないため、設定しても使用量は読み取れません。
 
 <details>
 <summary>Claude Code 2.1.257〜2.1.274 をお使いの場合</summary>
@@ -111,7 +111,7 @@ Codex を再起動すれば準備完了です。セットアップスクリプ�
 
 オーケストレーターが作業を分割し、作業用のセッションを起動して監視を始めます。「PR を作成するまで」「調査して報告するまで」のように、どこまで進めるかを添えると、途中で止まらずに進みます。
 
-オーケストレーターのセッションには `Manager` という名前が付きます。Claude Code では外から名前を変えられないため、案内に従ってチャット欄に `/rename Manager` と入力してください。
+オーケストレーターのセッションには `Manager` という名前が付きます。Claude Code のデスクトップアプリでは自動で付きます。ターミナルの Claude Code では外から名前を変えられないため、案内に従ってチャット欄に `/rename Manager` と入力してください。
 
 ### 実行中
 
@@ -140,7 +140,7 @@ Codex を再起動すれば準備完了です。セットアップスクリプ�
 | --- | --- | --- |
 | `maxRunning` | `3` | 同時に実行する作業セッションの上限 |
 | `minFreeMemGb` | `2` | 空きメモリ（GB）がこの値を下回っている間は、新しいセッションを起動しない |
-| `pauseAtPct` | `95` | 使用量がこの割合（%）に達したら、新しいセッションを起動せず、実行中のセッションを一時停止する |
+| `pauseAtPct` | Claude Code: `null`<br>Codex: `95` | 使用量がこの割合（%）に達したら、新しいセッションを起動せず、実行中のセッションを止める。`null` では利用枠を理由に止めない。数値はどちらにも効き、`{ "claude": 90 }` のように書くと片方だけ変わる（[利用枠の上限](#利用枠の上限)） |
 | `watchIntervalMin` | `30` | 変化がないときにオーケストレーターが応答する間隔（分、最大 60） |
 | `pollSec` | `5` | セッションの状態を確認する間隔（秒） |
 | `profiles` | 下記 | 作業の種類ごとのモデルとエフォート |
@@ -204,6 +204,17 @@ Codex を再起動すれば準備完了です。セットアップスクリプ�
 
 変化がない場合は `watchIntervalMin` ごとにオーケストレーターが応答し、そのたびに会話全体を読み直します。間隔を短くするほど、変化がなくても使用量を消費します（1分間隔なら1時間に60回、30分間隔なら2回）。最大を60分としているのは、それより長いと読み直しの際にプロンプトキャッシュが切れ、かえってコストが増えるためです。一時的に短くしたい場合は、「監視は10分ごとにして」のように依頼できます。
 
+### 利用枠の上限
+
+実行中のセッションを途中で止めても、一時停止にはなりません。実行中のターンは打ち切られ、そのターンで読んだ内容や考えた途中経過は失われます。これは利用枠の上限に達して止まった場合と同じです。作業ツリーに書いたコードは、どちらの場合も残ります。
+
+- **Claude Code（既定: 止めない）** — 上限に達すると作業セッションもオーケストレーターも止まります。オーケストレーターのセッションは、Claude Code の「制限リセット時に自動的に続行する」で再開します。再開後、オーケストレーターは利用制限で止まった作業セッションを見つけて、`git status`・`git diff` を確認して続きから進めるよう依頼します
+- **Codex（既定: 95% で止める）** — 上限で止まった Codex のオーケストレーターがリセット時に自動で再開するかは確認していないため、従来どおり上限の手前で作業セッションを止めます。オーケストレーターには枠が残るので、監視はモデルを使わずに続き、枠が戻ると再開を依頼します
+
+残りの枠を別の作業に使いたいなど、上限の手前で止めたい場合は、`config.json` の `pauseAtPct` に割合を書くか、オーケストレーターに「90% で止めて」のように伝えてください。Claude Code で使用量を読むには status line の設定が必要で、デスクトップアプリでは使えません。
+
+以前の `config.example.json` を写した `config.json` には `"pauseAtPct": 95` が残っており、Claude Code でも 95% で止めます。止めない場合は、その行を消すか `{ "claude": null }` に書き換えてください。
+
 ## 更新とアンインストール
 
 ### Claude Code
@@ -265,7 +276,8 @@ Claude Code にも Codex にも、AI が別のセッションを操作するた�
 | 使用量の取得方法 | app-server から取得 | status line が書き出す `usage.json` から取得 |
 
 - 作業セッションからの報告は、報告専用の `session-report` 接続の `report` ツールがファイルに書き込み、オーケストレーターが読み取ります。Claude Code・Codex ともに、この接続では `report` だけを公開し、作業セッションの `session-manager` は無効にしています
-- Claude Code の使用量は CLI からは取得できず、status line に渡される値が唯一の公式な取得手段です。そのため初回に status line を設定します。元の status line は保存しておき、その表示を引き続き出力します
+- Claude Code の使用量は CLI からは取得できず、status line に渡される値が唯一の公式な取得手段です。そのため `pauseAtPct` を使う場合は status line を設定します。元の status line は保存しておき、その表示を引き続き出力します。デスクトップアプリは status line を表示しないため、使用量は記録されません
+- Claude Code の作業セッションが利用制限で止まったかは、`claude logs` の末尾にある「Usage limit reached」などの文面から推定します（`read_session` の `usageLimit`）。文面は公開された仕様ではないため、変わると見分けられなくなります
 - Claude Code の作業セッションは、編集の前に `.claude/worktrees/` に worktree を作成し、その中で作業します（agent view の既定の動作）
 
 <details>
@@ -279,9 +291,9 @@ Claude Code にも Codex にも、AI が別のセッションを操作するた�
 | `send_message` | オーケストレーター | 実行中のセッションにはターンの後に、停止中のセッションには続きとして送る。モデルやエフォートの変更も可能 | `thread/queue/add`・`turn/start`・`turn/steer` | 保持した後に `claude --resume --bg` |
 | `stop_session` | オーケストレーター | 実行中のターンを停止する | `turn/interrupt` | `claude stop` |
 | `set_session_name` | オーケストレーター | 名前を変更する | `thread/name/set` | 記録のみ |
-| `get_usage` | オーケストレーター | 使用量・空きメモリ・実行数、新しく起動できるかどうか、プロファイルの一覧 | `account/rateLimits/read` | `usage.json` |
+| `get_usage` | オーケストレーター | 使用量・空きメモリ・実行数、新しく起動できるかどうか（`pauseAtPct` があるときは使用量も見る）、プロファイルの一覧 | `account/rateLimits/read` | `usage.json` |
 | `update_session` | オーケストレーター | 記録（状態・メモ・保留）を更新する | `state.json` | `state.json` |
-| `wait_events` | オーケストレーター | 状態の変化・報告・承認待ち・メモリ不足・使用量の超過と回復を待つ | `thread/read` | `claude agents --json` |
+| `wait_events` | オーケストレーター | 状態の変化・報告・承認待ち・メモリ不足・使用量の超過（`pauseAtPct` があるとき）と回復を待つ | `thread/read` | `claude agents --json` |
 | `read_reports` | オーケストレーター | 報告を読む | `reports.jsonl` | `reports.jsonl` |
 | `report` | 作業セッション | オーケストレーターへ報告する | `reports.jsonl` | `reports.jsonl` |
 
@@ -299,6 +311,8 @@ Claude Code にも Codex にも、AI が別のセッションを操作するた�
 - **報告のやり取りは同じ PC 内に限られます**
 - **実験的な機能を利用しています** — Codex の app-server の一部と Claude Code の agent view は実験的な機能のため、バージョンアップで動作が変わる可能性があります
 - **デスクトップアプリとの連携は未検証です** — 作業セッションがアプリの一覧に表示されるかは確認していません。実行中は、アプリから同じセッションを続けないでください
+- **Claude Code のバックグラウンドセッションがリセット時に自動で続行するかは未確認です** — 続行しない場合も、オーケストレーターが再開後に続きを依頼します
+- **新しい作業フォルダは、先に PC で信頼しておく必要があります（Claude Code）** — `claude --bg` は信頼の確認を表示できません。信頼はリポジトリごとに記録され、親フォルダを信頼しても下のリポジトリには効きません。リモート（Remote Control・スマートフォン）から使う場合は、信頼済みのリポジトリを作業フォルダにしてください
 
 ## 動作確認
 
@@ -310,7 +324,7 @@ Claude Code にも Codex にも、AI が別のセッションを操作するた�
 | # | 確認項目 | 手順 | うまくいかない場合 |
 | --- | --- | --- | --- |
 | C1 | インストール | チャット欄で `/plugin` を開き、Installed タブに表示されるか。`/mcp` を開き、プラグインの `session-manager` が接続されているか | `node --version` が 20 以上か確認する |
-| C2 | ツールと使用量 | `/inline-agent-orchestrator:manage-sessions` を実行 → status line の設定を許可 → しばらく待ってから「`get_usage` を呼んで」と依頼 → 使用量（5h・weekly）と空きメモリが表示されるか | `~/.claude/settings.json` の `statusLine` と `~/.claude/session-manager-mcp/usage.json` を確認する |
+| C2 | ツールと使用量 | `/inline-agent-orchestrator:manage-sessions` を実行 → 「`get_usage` を呼んで」と依頼 → 空きメモリが表示され、`pauseAtPct` が `null` か。使用量も試す場合は、`config.json` に `"pauseAtPct": { "claude": 95 }` を書いてターミナルで実行し、status line の設定を許可 → しばらく待ってから同じ依頼 → 使用量（5h・weekly）が表示されるか | `~/.claude/settings.json` の `statusLine` と `~/.claude/session-manager-mcp/usage.json` を確認する |
 | C3 | セッションの起動 | 試すフォルダで一度 `claude` を起動し、フォルダを信頼しておく。その後「`start_session` で、名前は『試し』、作業フォルダはそのフォルダ、依頼は『ファイル数を数えて report で報告して』」と依頼 → `claude agents` に「試し」が表示されるか | ツールが返したエラーメッセージを確認する |
 | C4 | 報告の受信 | `wait_events` で `report`（done）を受信できるか。`claude attach <ID>` → `/mcp` で、作業セッションに `session-report` が表示され、オーケストレーター用のツールが使えないか | `~/.claude/session-manager-mcp/worker-mcp.json` を確認する |
 | C5 | 実行中のセッションへの指示 | 長めの依頼の実行中に `send_message` → `delivery: queued` となり、終了後の `wait_events` で `queuedDelivered` となって、同じセッションで続くか | 別の ID で続いた場合は `copiedTo` が表示される |
@@ -339,7 +353,7 @@ Claude Code にも Codex にも、AI が別のセッションを操作するた�
 
 | メッセージ | 対処 |
 | --- | --- |
-| `Workspace not trusted`（Claude Code） | 作業フォルダで一度 `claude` を起動し、フォルダを信頼する |
+| `Workspace not trusted`・「信頼されていない」（Claude Code） | PC のターミナルで作業フォルダに移って一度 `claude` を起動し、信頼の確認で承認する。信頼はリポジトリごとで、親フォルダの信頼は効かない |
 | `claude agents --json returned something that is not JSON`（Claude Code） | CLI を更新する。agent view の状態は `claude daemon status` で確認できる |
 | `daemon start failed`（Codex） | Windows では、管理者権限の PowerShell からは起動できません。`CODEX_HOME` のパスが長すぎる場合も起動できません |
 | `thread/queue/add を使えません`（Codex） | Codex を更新する |
