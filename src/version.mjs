@@ -8,7 +8,7 @@
 // With auto-update off, the latest version on GitHub is read at most once a
 // day (kept in the state folder); a failed read is skipped quietly.
 
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -64,7 +64,9 @@ const isInside = (child, parent) => {
   const r = relative(resolve(parent), resolve(child));
   return r === '' || (!r.startsWith('..') && !isAbsolute(r));
 };
-const envOn = (v) => Boolean(v) && v !== '0' && String(v).toLowerCase() !== 'false';
+// Windows paths differ only in case (C: and c:) for the same folder.
+const samePath = (a, b) => relative(resolve(a), resolve(b)) === '';
+const envOn =(v) => Boolean(v) && v !== '0' && String(v).toLowerCase() !== 'false';
 const newest = (versions) => versions.reduce((a, v) => (a === null || compareVersions(v, a) === 1 ? v : a), null);
 
 // Installed version and auto-update of the Claude Code plugin. Both are null
@@ -78,7 +80,7 @@ function claudeInstall({ env, root, cwd }) {
   const list = Array.isArray(records) ? records.filter((r) => SEMVER.test(String(r?.version ?? ''))) : [];
   // The user's install, or one for this project; any other project's install
   // does not load here.
-  const here = list.filter((r) => r.scope === 'user' || (r.projectPath && resolve(r.projectPath) === resolve(cwd)));
+  const here = list.filter((r) => r.scope === 'user' || (r.projectPath && samePath(r.projectPath, cwd)));
   const installed = newest((here.length ? here : list).map((r) => r.version));
   let autoUpdate = false; // the default for a marketplace that is not Anthropic's
   const fromSettings = readJson(join(configDir, 'settings.json'))?.extraKnownMarketplaces?.[MARKETPLACE]?.autoUpdate;
@@ -109,9 +111,13 @@ async function latestVersion({ dir, now, fetchFn }) {
   } catch {
     // offline or blocked: try again tomorrow
   }
+  // Other conversations may read it meanwhile: never leave it half written.
+  const tmp = `${path}.${process.pid}.tmp`;
   try {
-    writeFileSync(path, JSON.stringify({ checkedAt: new Date(now()).toISOString(), latest }, null, 2) + '\n', 'utf8');
+    writeFileSync(tmp, JSON.stringify({ checkedAt: new Date(now()).toISOString(), latest }, null, 2) + '\n', 'utf8');
+    renameSync(tmp, path);
   } catch {
+    rmSync(tmp, { force: true });
     // read again next time
   }
   return latest;

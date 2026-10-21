@@ -27,9 +27,9 @@ const CPU_SAMPLE_MS = 1000;
 // by the manager model with the app's own tools (mcp__ccd_*), which this
 // server cannot call; it only keeps their record and watches them.
 const APP_HINT = {
-  read: 'app の会話は mcp__ccd_session_mgmt__list_events（session_id にこの ID）で読む',
-  send: 'app の会話へは SendMessage（to にこの ID）で送る（動いていれば app が預かり、今のターンの後に届ける）。モデル・エフォートを変えるときは mcp__ccd_session_mgmt__set_session_model・set_session_effort',
-  stop: 'app の会話は mcp__ccd_session_mgmt__stop_session で止めてから、update_session で状態（例 paused）を記録する',
+  read: 'デスクトップアプリの会話は mcp__ccd_session_mgmt__list_events（session_id にこの ID）で読む',
+  send: 'デスクトップアプリの会話へは SendMessage（to にこの ID）で送る（動いていればデスクトップアプリが預かり、今のターンの後に届ける）。モデル・エフォートを変えるときは mcp__ccd_session_mgmt__set_session_model・set_session_effort',
+  stop: 'デスクトップアプリの会話は mcp__ccd_session_mgmt__stop_session で止めてから、update_session で状態（例 paused）を記録する',
 };
 
 export function workerInstructions(name, agent = 'codex', { app = false } = {}) {
@@ -322,7 +322,7 @@ export function createTools({ backend, client, store, sys = {} }) {
 
     start_session: {
       description:
-        '新しい作業の会話を起こして、最初の依頼を送る（名前・作業フォルダ・モデル・エフォート）。モデルとエフォートは、仕事の種類に合う profile（get_usage の profiles）で選ぶのが基本。model・effort を書くと profile より優先する。会話はこの会話とは別に動き、この会話が終わっても動き続ける。空きメモリ・CPU・利用枠（pauseAtPct があるとき）に余裕が無いときは起こさずに理由を返す（force=true で無視）。名前は管理中の会話と重ねない。Claude Code の via="app"（デスクトップ app での既定）では、この道具は起こさずに、app の mcp__ccd_session__start_session に渡す値（appStart）と、起こした後に update_session に渡す値（record）を返す（startInApp=true）。',
+        '新しい作業の会話を起こして、最初の依頼を送る（名前・作業フォルダ・モデル・エフォート）。モデルとエフォートは、仕事の種類に合う profile（get_usage の profiles）で選ぶのが基本。model・effort を書くと profile より優先する。会話はこの会話とは別に動き、この会話が終わっても動き続ける。空きメモリ・CPU・利用枠（pauseAtPct があるとき）に余裕が無いときは起こさずに理由を返す（force=true で無視）。名前は管理中の会話と重ねない。Claude Code の via="app"（Claude のデスクトップアプリでの既定）では、この道具は起こさずに、デスクトップアプリの mcp__ccd_session__start_session に渡す値（appStart）と、起こした後に update_session に渡す値（record）を返す（startInApp=true）。',
       inputSchema: {
         type: 'object',
         required: ['name', 'cwd', 'prompt'],
@@ -344,7 +344,7 @@ export function createTools({ backend, client, store, sys = {} }) {
           via: {
             type: 'string',
             enum: ['app', 'bg'],
-            description: 'Claude Code だけ: app＝デスクトップ app の会話（サイドバーに出てピン止めできる）、bg＝claude --bg。省略時は監視役がデスクトップ app なら app、ターミナルなら bg',
+            description: 'Claude Code だけ: app＝Claude のデスクトップアプリの会話（サイドバーに出てピン止めできる）、bg＝claude --bg。省略時は監視役が Claude のデスクトップアプリなら app、ターミナルなら bg',
           },
           force: { type: 'boolean', default: false },
         },
@@ -523,7 +523,7 @@ export function createTools({ backend, client, store, sys = {} }) {
         const target = store.state().targets[threadId];
         const res =
           target?.via === 'app'
-            ? { renamed: false, note: 'app の会話の題名は mcp__ccd_session_mgmt__set_session_title で変える（ここでは監視役の記録だけを変えた）' }
+            ? { renamed: false, note: 'デスクトップアプリの会話の題名は mcp__ccd_session_mgmt__set_session_title で変える（ここでは監視役の記録だけを変えた）' }
             : await be.rename(threadId, name, target);
         // Keep old names so reports written under them still match.
         if (target) store.updateTarget(threadId, { name, aliases: [...new Set([...(target.aliases ?? []), target.name])] });
@@ -543,7 +543,7 @@ export function createTools({ backend, client, store, sys = {} }) {
 
     update_session: {
       description:
-        '監視役の記録（state.json）を書き換える。管理に加える（app の会話は start_session が返した record の値で）・状態（running / waiting_user / done / pending=保留 / paused=手で止めた / paused_usage=利用枠で止めた / failed）・一言のメモ・触る場所。会話そのものには何もしない。',
+        '監視役の記録（state.json）を書き換える。管理に加える（デスクトップアプリの会話は start_session が返した record の値で）・状態（running / waiting_user / done / pending=保留 / paused=手で止めた / paused_usage=利用枠で止めた / failed）・一言のメモ・触る場所。会話そのものには何もしない。',
       inputSchema: {
         type: 'object',
         required: ['threadId'],
@@ -556,7 +556,7 @@ export function createTools({ backend, client, store, sys = {} }) {
           via: {
             type: 'string',
             enum: ['app', 'bg'],
-            description: 'app: app の会話を管理に加えるとき（start_session の record の値）。資源待ちの記録には、断った start_session が返した via を入れる',
+            description: 'app: デスクトップアプリの会話を管理に加えるとき（start_session の record の値）。資源待ちの記録には、断った start_session が返した via を入れる',
           },
           cwd: { type: 'string' },
           profile: { type: 'string' },

@@ -148,8 +148,8 @@ export function claudeBackend({ store, claudePath = 'claude', permissionMode = '
     if (loggedIn === false)
       throw new ToolError(
         [
-          'この PC の claude コマンド（CLI）がログインしていないため、claude --bg の作業の会話は動けません（デスクトップ app のログインは CLI には効かない）。',
-          'デスクトップ app では via="app"（app の会話）で起こす。claude --bg を使うなら、利用者にターミナルで claude を起動して /login してもらう。',
+          'この PC の claude コマンド（CLI）がログインしていないため、claude --bg の作業の会話は動けません（Claude のデスクトップアプリのログインは CLI には効かない）。',
+          'Claude のデスクトップアプリでは via="app"（デスクトップアプリの会話）で起こす。claude --bg を使うなら、利用者にターミナルで claude を起動して /login してもらう。',
         ].join('\n'),
       );
   }
@@ -317,7 +317,7 @@ export function claudeBackend({ store, claudePath = 'claude', permissionMode = '
     agent: 'claude',
     // The session id is only known after `claude --bg` returns.
     firstMessageHasId: false,
-    openCommand: (id, target) => (target?.via === 'app' ? `デスクトップ app のサイドバー（ピン止め）の「${target.name}」` : `claude attach ${target?.jobId ?? id}`),
+    openCommand: (id, target) => (target?.via === 'app' ? `Claude のデスクトップアプリのサイドバー（ピン止め）の「${target.name}」` : `claude attach ${target?.jobId ?? id}`),
 
     onEvent: () => () => {},
 
@@ -430,7 +430,7 @@ export function claudeBackend({ store, claudePath = 'claude', permissionMode = '
       if (!existsSync(path))
         throw new Error(
           `利用枠がまだ記録されていません。利用者の了承を得てから、次のコマンドで status line を設定してください（~/.claude/settings.json の statusLine を変える。前の表示は残る）: node "${SETUP_PATH}" statusline` +
-            '。status line はターミナルの Claude Code でだけ描かれる。デスクトップ app では描かれず記録されないので、設定を求めない',
+            '。status line はターミナルの Claude Code でだけ描かれる。Claude のデスクトップアプリでは描かれず記録されないので、設定を求めない',
         );
       const data = JSON.parse(readFileSync(path, 'utf8'));
       const windows = [];
