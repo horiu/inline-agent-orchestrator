@@ -38,7 +38,7 @@ Claude Code の作業の会話は、監視役が Claude のデスクトップア
 ## 1. 始める
 
 1. `local-rules.md` があれば読む。状態のフォルダに `handoff.md`（前の見回りが止まったときの引き継ぎメモ）があれば読み、そこに書いた続きから始める（管理中の会話・決めたこと・次にやること）。3. の `list_sessions` と食い違えば `list_sessions` を正とし、管理中の会話が全部 `done` なら参考にとどめる
-2. この会話の名前を `<リポジトリ名> Manager` にする（例: wakarium で始めたら `wakarium Manager`。前の会話から続けていて、`<リポジトリ名> Manager` がもう付いていれば飛ばす）
+2. この会話の名前を `<リポジトリ名> Manager` にする（例: wakarium で始めたら `wakarium Manager`。前の会話から続けていて、`<リポジトリ名> Manager` がもう付いていれば名前の変更は飛ばす。下の監視役のピン止めは飛ばさない）
    - リポジトリ名: 作業フォルダの git リポジトリの名前。シェルで `git rev-parse --path-format=absolute --git-common-dir` を読み、その親フォルダの名前にする（worktree（`.claude/worktrees/…` など）の中でも、worktree のフォルダ名ではなく元のリポジトリの名前になる）。git の外なら作業フォルダの名前
    - Codex: シェルで自分の会話の ID を読み（PowerShell は `$env:CODEX_THREAD_ID`、ほかは `echo $CODEX_THREAD_ID`）、`set_session_name`（threadId にその ID、name `<リポジトリ名> Manager`）。ID が空、または失敗したら飛ばす（利用者には言わない）
    - Claude Code: Claude のデスクトップアプリでは、遅延ツール `mcp__ccd_session_mgmt__set_session_title` と `mcp__ccd_sidebar__set_pinned` を ToolSearch（`select:mcp__ccd_session_mgmt__set_session_title,mcp__ccd_sidebar__set_pinned`）でまとめて読み込み、`set_session_title` を session_id `self`・title `<リポジトリ名> Manager` で呼ぶ（利用者には言わない）。この道具が無い（ターミナルの Claude Code）か失敗したときだけ、最初の返事に一行「このセッションの名前を変えるには `/rename <リポジトリ名> Manager` と入力してください」と添える（`<リポジトリ名>` は実際の名前に置き換える）
@@ -254,7 +254,8 @@ Claude Code の作業の会話は、監視役が Claude のデスクトップア
 - 判断待ち・利用者が確かめること
 - 済んでいない TODO: 番号・やること・条件（そろっているか）
 - `handoff.md` があれば、終わったこと（この表）だけの内容に書き換える（次に始めたときに古い待ちを続けないため）
-- worktree の片付けを聞く（消すのは利用者の返事のあと）。デスクトップアプリの会話は、アーカイブ（`mcp__ccd_session_mgmt__archive_session`）すると worktree も片付く。アーカイブは利用者の返事のあとに、終わった会話だけ（監視役の会話のピン止めは外さない。1. の 2）
+- worktree の片付けを聞く（消すのは利用者の返事のあと）。デスクトップアプリの会話は、アーカイブ（`mcp__ccd_session_mgmt__archive_session`）すると worktree も片付く。アーカイブは利用者の返事のあとに、終わった会話だけ
+- 監視役の会話のピン止めは、ここでも外さない（1. の 2）
 
 ## 10. TODO（あとでやること）
 
