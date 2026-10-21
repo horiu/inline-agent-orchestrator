@@ -9,7 +9,7 @@ description: Make this session an orchestrator that starts, monitors and steers 
 
 - 道具: MCP サーバー `session-manager`（`list_sessions`・`read_session`・`start_session`・`send_message`・`stop_session`・`set_session_name`・`get_usage`・`update_session`・`wait_events`・`read_reports`）。`report` は作業の会話が使うもので、監視役は使わない
 - デスクトップ app の道具（Claude Code をデスクトップ app で使うとき。遅延ツールなので 1. の 3 で読み込む）: 起こす `mcp__ccd_session__start_session`、送る `SendMessage`、読む `mcp__ccd_session_mgmt__list_events`、止める `mcp__ccd_session_mgmt__stop_session`、一覧 `mcp__ccd_session_mgmt__list_sessions`、ピン止め `mcp__ccd_sidebar__set_pinned`。`session-manager` はこれらを呼べないので、app の会話を起こす・送る・止める・ピン止めするのは監視役の仕事。`session-manager` は記録・報告・資源の判定・見回りを受け持つ
-- 記録: 状態のフォルダの `state.json`（道具が書く。管理中の会話・状態・メモ・触る場所）、`reports.jsonl`（作業の会話からの報告）、`config.json`（下限・上限）
+- 記録: 状態のフォルダの `state.json`（道具が書く。管理中の会話・状態・メモ・触る場所）、`reports.jsonl`（作業の会話からの報告）、`config.json`（下限・上限）、`handoff.md`（監視役が書く引き継ぎメモ。4. の「見回りが止まったとき」）
 - 利用者が足す決まり: 状態のフォルダ（Codex は `~/.codex/session-manager/`、Claude Code は `~/.claude/session-manager-mcp/`）の `local-rules.md`（あれば最初に読む。書き方の例はこの Skill の `local-rules.example.md`）。プロジェクトの決まりは各リポジトリの `AGENTS.md`（Codex）・`CLAUDE.md`（Claude Code）
 
 ## Codex と Claude Code の違い
@@ -34,7 +34,7 @@ Claude Code の作業の会話は、監視役がデスクトップ app で動い
 
 ## 1. 始める
 
-1. `local-rules.md` があれば読む
+1. `local-rules.md` があれば読む。状態のフォルダに `handoff.md`（前の見回りが止まったときの引き継ぎメモ）があれば読み、そこに書いた続きから始める（管理中の会話・決めたこと・次にやること）。3. の `list_sessions` と食い違えば `list_sessions` を正とし、管理中の会話が全部 `done` なら参考にとどめる
 2. この会話の名前を `<リポジトリ名> Manager` にする（例: wakarium で始めたら `wakarium Manager`。前の会話から続けていて、`<リポジトリ名> Manager` がもう付いていれば飛ばす）
    - リポジトリ名: 作業フォルダの git リポジトリの名前。シェルで `git rev-parse --path-format=absolute --git-common-dir` を読み、その親フォルダの名前にする（worktree（`.claude/worktrees/…` など）の中でも、worktree のフォルダ名ではなく元のリポジトリの名前になる）。git の外なら作業フォルダの名前
    - Codex: シェルで自分の会話の ID を読み（PowerShell は `$env:CODEX_THREAD_ID`、ほかは `echo $CODEX_THREAD_ID`）、`set_session_name`（threadId にその ID、name `<リポジトリ名> Manager`）。ID が空、または失敗したら飛ばす（利用者には言わない）
@@ -119,11 +119,36 @@ app が起こすのを断ったとき（利用者がリモート（Remote Contro
 - app の会話を起こせるのは、利用者が入力して始まったターンの中だけ。仕事を渡したら、そのターンのまま `wait_events` で見回りを続ける（待ち行列の仕事も、そのターンの中で起こせる）
 - app の知らせ（`<side-sessions-event>`。起こした会話がターンを終え、ほかに動いている会話が無く、監視役が待っていないときに届く）は、その会話の最後の返事の先頭を伝えるだけなので、`wait_events` を呼んで出来事として処理する（知らせだけで状態を決めない）。知らせから始まったターンでは app の会話を起こせないので、次の仕事は 2. の「app が起こすのを断ったとき」のとおりカードで提案する
 
-- **`idle: true` が返ったら見回りをやめる**（動いている会話・枠で止めた会話・資源待ちの仕事・預かった連絡・未読の報告がどれも無い）。利用者へ「動いている会話が無いので見回りを止めました」と伝えてターンを終える。次の依頼や「見回って」で再開する
+- **`idle: true` が返ったら見回りをやめる**（動いている会話・判断待ちの会話（`stopWhenStuckMin` が null でないとき）・枠で止めた会話・資源待ちの仕事・預かった連絡・未読の報告がどれも無い）。利用者へ「動いている会話が無いので見回りを止めました」と伝えてターンを終える。利用者が次に何か打てば再開する（下の「止まった後に再開する」）
+- **`stuck: true` が返ったら見回りを止める**（進められる仕事が無いまま設定の `stopWhenStuckMin` 分（既定 120）続いた。どの会話も利用者の判断・承認・入力か、メモリ・CPU の空きを待っている。判断待ちだけが残ったときも、すぐには止めずにこの時間まで待つ）。下の「見回りが止まったとき」のとおりにしてターンを終える。利用枠の回復待ちは数えないので、`paused_usage` や `waitingOnUsageLimit` の会話があるあいだは返らない
 - 変化の無いタイムアウト（`timedOut: true`）には何も書かずにもう一度呼ぶ（利用者への文も出さない。戻るたびに会話の全部を読み直すので、ここで書くほど会話が膨らむ）
 - 見回りの間隔は設定の `watchIntervalMin`（既定30分）。`intervalMin` は付けずに呼ぶ。利用者が「見回りは10分ごとに」のように頼んだときだけ、以後 `intervalMin` を付ける（設定より長くはできない。ずっと長くしたいと言われたら、README の「見回りの間隔と利用枠」を案内する）
-- 見回りが利用者に止められた（打ち切られた）ら、利用者の文に答えてから見回りに戻る。ただし、やめる指示なら戻らない（次の「やめるとき」）
+- 見回りが利用者に止められた（打ち切られた）ら、利用者の文に答えてから見回りに戻る。ただし、やめる指示なら戻らない（下の「やめるとき」）
 - `wait_events` は1つずつ呼ぶ（並べて呼ぶと前の呼び出しは `cancelled` で打ち切られる。打ち切られた分の出来事は次の呼び出しで返る。ただし Claude Code の `queuedDelivered` は返らないことがあるので、届いたかは `list_sessions` で見る: `managed.queued` が 0 で、会話が active になっていれば届いている）
+- 報告は書かれるとすぐ `wait_events` が返す（状態は `pollSec` ごと）
+- 見回りを止めるとき（`idle`・`stuck`・やめる指示のどれでも）は、毎回 `handoff.md` を今の状態に書き直す（中身は下の「見回りが止まったとき」の 1。古いメモで続きを始めないため）
+- 監視役は自分で会話を圧縮できない（`/compact` は利用者のコマンド）。会話が長くなったと利用者に言われたら、`handoff.md` を書き（下の「見回りが止まったとき」の 1）、新しい会話で manage-sessions を始めれば続きから進められると伝える
+
+### 見回りが止まったとき（`stuck: true`）
+
+次の順にして、`wait_events` は呼ばずにターンを終える。
+
+1. 状態のフォルダに `handoff.md`（引き継ぎメモ）を書く（前のものは書き換える）。中身:
+   - 管理中の会話: 名前・状態・ブランチ・PR・待っていること（`waiting` と `list_sessions` から）
+   - 決めたこと: 利用者の答え・方針（後の質問に同じ型で答えるため）
+   - 次にやること: 返事が来たら誰に何を送るか、資源待ちの仕事、最後の報告に残っていること
+2. 利用者へ伝える:
+   - 止まった理由。例「2時間、進められる仕事が無かったので見回りを止めました」（`stuckMin` を時間・分にする）
+   - 待っているもの（`waiting`）: 判断待ち（`question`）は 5. のとおりまとめて、選択肢とおすすめを付ける。承認待ち・入力待ち（`approval`・`input`）は開き方（`open`。app の会話はリンク `[名前](#local_…)`）を付ける。資源待ち（`room`）は何を待っているか。報告が無いまま止まっている会話（`stopped`）は `read_session` で読んだ要点
+   - 再開のしかた:「質問に答えるか、何か打つと見回りに戻ります」
+3. 通知の道具（`PushNotification` など）が遅延ツールにあれば ToolSearch で読み込み、一言知らせる（例「<リポジトリ名> Manager: 判断待ちが2件あります。見回りを止めました」）。無ければ飛ばす（利用者には言わない）
+
+### 止まった後に再開する
+
+- 見回りが止まったあと（`stuck`・`idle`・利用者が打ち切った後のどれでも）、利用者から文が届いたら、まず `handoff.md`（あれば）・`list_sessions`・`read_reports` を読む。その文に答え、管理中の仕事（動いている会話・判断待ち・承認待ち・資源待ち・預かった連絡）が残っていれば `wait_events` で見回りに戻る。「見回って」と言われなくても戻る
+- 文に判断待ちへの答えがあれば、5. のとおりそれぞれの会話へ送ってから戻る
+- 「監視をやめて」「全部止めて」で止めたとき（下の「やめるとき」）は、利用者が「見回って」と言うか新しい仕事を頼むまで戻らない（文には答える）
+- app の知らせ（`<side-sessions-event>`）で起きたターンでも、`handoff.md`（あれば）・`list_sessions`・`read_reports` を読み、`wait_events` で結果を出来事として処理する。そのターンからは app の会話を新しく起こせないので、次の仕事は上の決まりのとおりカードで提案し、押されていなければ利用者が次に打ったときに起こす
 
 ### やめるとき
 
@@ -174,6 +199,7 @@ app が起こすのを断ったとき（利用者がリモート（Remote Contro
 
 - 表: 会話の名前・結果（ブランチ・PR・残り）
 - 判断待ち・利用者が確かめること
+- `handoff.md` があれば、終わったこと（この表）だけの内容に書き換える（次に始めたときに古い待ちを続けないため）
 - worktree の片付けを聞く（消すのは利用者の返事のあと）。app の会話は、アーカイブ（`mcp__ccd_session_mgmt__archive_session`）すると worktree も片付く。アーカイブは利用者の返事のあとに、終わった会話だけ
 
 ## status line を元に戻す（Claude Code）

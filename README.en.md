@@ -7,7 +7,7 @@ English | [日本語](README.md)
 When you run several tasks in parallel with Claude Code or Codex, do you end up opening session after session and checking on each one in turn? Inline Agent Orchestrator turns the chat you already use into the coordinator. It starts a session for each task, keeps an eye on their progress, and comes back to you only with the decisions that need you, all at once. The screens and controls stay the same Claude Code and Codex you know.
 
 > [!NOTE]
-> This is a prototype (v0.6.0). The unit tests pass, but it has not yet been verified against real Claude Code or Codex sessions. Please run through [Verification](#verification) before relying on it.
+> This is a prototype (v0.7.0). The unit tests pass, but it has not yet been verified against real Claude Code or Codex sessions. Please run through [Verification](#verification) before relying on it.
 >
 > Messages from the tools and the skill's instructions are currently written in Japanese. The model still understands and answers in your language.
 
@@ -156,7 +156,8 @@ You can also point to another location with the `CSM_HOME` environment variable.
 | `maxCpuPct` | `90` | No new sessions are started while CPU usage (%, averaged over one second) is at or above this value. `null` ignores the CPU |
 | `pauseAtPct` | Claude Code: `null`<br>Codex: `95` | When usage reaches this percentage, no new sessions are started and running sessions are stopped. `null` never stops for usage. A number applies to both; write `{ "claude": 90 }` to change one only ([Usage limits](#usage-limits)) |
 | `watchIntervalMin` | `30` | How often the orchestrator checks in when nothing happens (minutes, max 60) |
-| `pollSec` | `5` | How often session status is checked (seconds) |
+| `pollSec` | `5` | How often session status is checked (seconds). Reports are picked up right away, without waiting for this interval |
+| `stopWhenStuckMin` | `120` | End the monitoring when nothing can move forward (every session waits for a decision, an approval or input, or for free memory or CPU) for this many minutes. Waiting for the usage limit to reset does not count. `null` never ends it ([When nothing can move forward](#when-nothing-can-move-forward)) |
 | `profiles` | See below | Model and effort for each kind of task |
 | `defaults.model` / `defaults.effort` | — | Model and effort when no profile is used (each tool's default when omitted) |
 
@@ -218,7 +219,23 @@ To share the reporting rules with sessions you open yourself, append the content
 
 While monitoring, it is the MCP server — not the model — that checks session status. Whenever a report arrives or a status changes, the orchestrator responds right away.
 
+Reports are picked up as soon as they are written (through file change notifications). Where notifications don't arrive (network drives, for example), reports are still read again every `pollSec`, so nothing is missed. A status check (`claude agents --json` in Claude Code) takes about 0.25 seconds, which at every 5 seconds is about 5% of one CPU core. Since the work happens in real time, the default favors low delay.
+
 When nothing happens, the orchestrator checks in every `watchIntervalMin` minutes and rereads the whole conversation each time. The shorter the interval, the more usage it consumes even when nothing changes (60 times an hour at 1-minute intervals, twice an hour at 30 minutes). The maximum is 60 minutes because beyond that the prompt cache expires before the reread, which ends up costing more. To shorten it temporarily, just ask, for example "check every 10 minutes".
+
+### When nothing can move forward
+
+When every session is waiting for a decision, an approval or input, or for free memory or CPU, and nothing can move forward for `stopWhenStuckMin` (2 hours by default), the orchestrator ends the monitoring by itself, so that it doesn't keep using usage and CPU while waiting for nothing. When only sessions waiting for your decision are left, it also waits this long before ending. Waiting for the usage limit to reset does not count, since the work resumes once it does. A report, a status change or an instruction from the orchestrator starts the count over.
+
+When it ends the monitoring, the orchestrator:
+
+- Tells you why it stopped, what is waiting (questions are gathered with options and a recommendation; approval requests come with how to open the session), and how to resume
+- Writes a handoff note, `handoff.md`, to the data folder (the managed sessions, decisions made, and next steps)
+- Sends a short notification, if a notification tool is available
+
+After that, type anything and the orchestrator reads the handoff note and the latest state, answers you, and goes back to monitoring, even if you don't say "check on them". If you stopped it with "stop monitoring" or "stop everything", it doesn't go back until you say "check on them" or ask for new work.
+
+The orchestrator can't compact its own conversation (`/compact` is a command you type). When the conversation gets long, use the handoff note instead: ask it to "write a handoff note", then start manage-sessions in a new session, and it picks up from the note.
 
 ### Usage limits
 
@@ -316,7 +333,7 @@ Neither Claude Code nor Codex ships a tool that lets the AI operate other sessio
 | `set_session_name` | Orchestrator | Rename a session | `thread/name/set` | Record only |
 | `get_usage` | Orchestrator | Usage, free memory, CPU, number of running sessions, whether a new one may start (usage counts only with `pauseAtPct`), how sessions are started (`launcher`), and the list of profiles | `account/rateLimits/read` | `usage.json` |
 | `update_session` | Orchestrator | Update the record (status, notes, on hold, waiting for resources, adding an app session) | `state.json` | `state.json` |
-| `wait_events` | Orchestrator | Wait for status changes, reports, approval requests, low memory, usage limits being hit (with `pauseAtPct`) or reset, and room to start a task held back for resources | `thread/read` | `claude agents --json` |
+| `wait_events` | Orchestrator | Wait for status changes, reports (as soon as they are written), approval requests, low memory, usage limits being hit (with `pauseAtPct`) or reset, and room to start a task held back for resources. Ends with a list of what is waiting when nothing can move forward for long | `thread/read` | `claude agents --json` |
 | `read_reports` | Orchestrator | Read reports | `reports.jsonl` | `reports.jsonl` |
 | `report` | Worker session | Report to the orchestrator | `reports.jsonl` | `reports.jsonl` |
 
@@ -327,7 +344,7 @@ Every call follows the official documentation (for Codex, `learn.chatgpt.com/doc
 ## Limitations
 
 - **It does not approve on your behalf** — When a worker session is waiting for approval or input, the orchestrator only tells you how to open it. With Claude Code's default (`acceptEdits`), running commands waits for confirmation
-- **Monitoring happens within the orchestrator's turn** — When no sessions are running, monitoring ends and resumes the next time you talk to the orchestrator
+- **Monitoring happens within the orchestrator's turn** — When no sessions are running, or nothing can move forward for long, monitoring ends and resumes the next time you talk to the orchestrator
 - **Only free memory and CPU are watched** — Individual processes, such as how many dev servers are running, are not counted. Put any rules you need in `local-rules.md`
 - **Codex workers use a dedicated reporting connection** — For sessions started by this tool, only `session-report`'s `report` is pre-approved. `session-manager` is disabled within that worker; other MCP servers' approval settings and the sandbox are unchanged. Reporting settings are reapplied when the orchestrator resumes the worker. If an older session is still connected to another terminal or manager, close that connection and let the shared daemon unload it before resuming
 - **Messages to a running Claude Code session arrive after its turn ends** — Messages held for a session that is then stopped are discarded
