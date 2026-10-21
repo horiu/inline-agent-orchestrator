@@ -993,7 +993,7 @@ test('a usage-paused session whose recovery was reported no longer holds off the
 
 // Tools with what the TODO conditions read: the version of this tool, when
 // this server started, and gh (prs: PR number -> state).
-function todoTools({ running = '0.9.0', startedAt = 0, prs = {}, ghCalls = [], env = { CLAUDE_CODE_SESSION_ID: 'manager' } } = {}) {
+function todoTools({ running = '0.9.0', startedAt = 0, prs = {}, ghCalls = [], pid = 1, alive = () => true } = {}) {
   return createTools({
     client: new AppServerClient({ connector: fake.connector() }),
     store,
@@ -1005,9 +1005,10 @@ function todoTools({ running = '0.9.0', startedAt = 0, prs = {}, ghCalls = [], e
       cpus: idleCpus,
       running,
       startedAt,
-      env,
+      pid,
+      alive,
       gh: async (args, opts) => {
-        ghCalls.push({ args, cwd: opts?.cwd });
+        ghCalls.push({ args, cwd: opts?.cwd, timeoutMs: opts?.timeoutMs });
         const state = prs[args[2]];
         return state ? { code: 0, stdout: JSON.stringify({ state }), stderr: '' } : { code: 1, stdout: '', stderr: 'no pull requests found' };
       },
@@ -1048,7 +1049,7 @@ test('wait_events reports a TODO whose condition is met once, and "anytime" neve
   await t.todo.handler({ action: 'add', text: 'マージ後', when: { type: 'pr', pr: 7 }, cwd: '/repo' });
   await t.todo.handler({ action: 'add', text: '新しい版で', when: { type: 'version', version: '0.10.0' } });
   assert.equal((await t.wait_events.handler({})).idle, true, 'nothing is due yet, and TODOs do not keep the watch going');
-  assert.deepEqual(ghCalls.at(-1), { args: ['pr', 'view', '7', '--json', 'state'], cwd: '/repo' });
+  assert.deepEqual(ghCalls.at(-1), { args: ['pr', 'view', '7', '--json', 'state'], cwd: '/repo', timeoutMs: 20000 });
   clock = 60_000;
   prs[7] = 'MERGED';
   const r = await t.wait_events.handler({});
@@ -1064,20 +1065,91 @@ test('wait_events reports a TODO whose condition is met once, and "anytime" neve
 
 test('TODOs waiting for a new version or a restart', async () => {
   clock = 1000;
-  const before = todoTools({ running: '0.9.0', startedAt: 0 });
+  const running = new Set([11]);
+  const alive = (pid) => running.has(pid);
+  const before = todoTools({ running: '0.9.0', startedAt: 0, pid: 11, alive });
   await before.todo.handler({ action: 'add', text: '版が変わったら確かめる', when: { type: 'version' } });
   await before.todo.handler({ action: 'add', text: '再起動したら確かめる', when: { type: 'restart' } });
+  assert.equal(store.state().todos[1].addedPid, 11);
   assert.deepEqual((await before.list_sessions.handler({})).todos.map((td) => td.due), [false, false]);
-  const after = todoTools({ running: '0.9.1', startedAt: 2000 });
+  // A new chat opened while the one that added it still runs is no restart.
+  const newChat = todoTools({ running: '0.9.0', startedAt: 2000, pid: 12, alive });
+  assert.deepEqual((await newChat.list_sessions.handler({})).todos.map((td) => td.due), [false, false]);
+  // Restarted: the server that added it has gone, and any later conversation sees it.
+  running.delete(11);
+  const after = todoTools({ running: '0.9.1', startedAt: 2000, pid: 13, alive });
   assert.deepEqual((await after.list_sessions.handler({})).todos.map((td) => [td.due, td.whenText]), [
-    [true, '新しい版が入ったら'],
+    [true, '新しい版で動いたら（読み込んだら）'],
     [true, '起動し直したら'],
   ]);
-  // Another conversation (the status command in another chat) cannot tell a restart.
-  const other = todoTools({ running: '0.9.1', startedAt: 2000, env: { CLAUDE_CODE_SESSION_ID: 'other' } });
-  const [, restart] = (await other.list_sessions.handler({})).todos;
-  assert.equal(restart.due, null);
-  assert.match(restart.dueDetail, /足した会話とは別の会話/);
+  // A server running since before the TODO was added has not restarted.
+  const old = todoTools({ running: '0.9.0', startedAt: 500, pid: 14, alive });
+  assert.equal((await old.list_sessions.handler({})).todos[1].due, false);
+});
+
+test('todo takes only the fields it is meant to change; a session is linked by threadId', async () => {
+  const t = todoTools();
+  await t.todo.handler({ action: 'add', text: 'A', status: 'done', createdAt: 'x', dueNotifiedAt: 'x', fromVersion: '9' });
+  assert.deepEqual([store.state().todos[0].status, store.state().todos[0].createdAt, store.state().todos[0].dueNotifiedAt, store.state().todos[0].fromVersion], [
+    'open',
+    new Date(clock).toISOString(),
+    undefined,
+    '0.9.0',
+  ]);
+  await t.todo.handler({ action: 'update', id: 1, text: 'B', status: 'done', addedPid: 99, auto: true });
+  assert.deepEqual([store.state().todos[0].text, store.state().todos[0].status, store.state().todos[0].addedPid, store.state().todos[0].auto], ['B', 'open', 1, true]);
+  // Linking the session started from it starts it, and the session's end finishes it.
+  store.updateTarget('s', { name: 'S', status: 'running' });
+  await t.todo.handler({ action: 'update', id: 1, threadId: 's' });
+  assert.deepEqual([store.state().todos[0].status, store.state().todos[0].threadId], ['started', 's']);
+  await t.update_session.handler({ threadId: 's', status: 'done' });
+  assert.equal(store.state().todos[0].status, 'done');
+  await assert.rejects(t.todo.handler({ action: 'update', id: 1, threadId: 't' }), /済んでいます/);
+});
+
+test('a due TODO still open is returned again after an hour, without restarting the stuck count', async () => {
+  setup({ stopWhenStuckMin: 3 * 60, watchIntervalMin: 9, pollSec: 60 });
+  fake.addThread('q', { status: { type: 'idle' } });
+  store.updateTarget('q', { name: 'Q', status: 'waiting_user', lastSeen: { status: 'idle', activeFlags: [] } });
+  const t = todoTools();
+  await t.todo.handler({ action: 'add', text: '続き', when: { type: 'at', at: new Date(0).toISOString() }, auto: true });
+  const first = await t.wait_events.handler({ wait: false });
+  assert.deepEqual(first.events.map((e) => e.todos.map((x) => [x.id, x.repeat])), [[[1, false]]]);
+  assert.deepEqual((await t.wait_events.handler({ wait: false })).events, [], 'not again at once');
+  // The turn that got it ended before it acted (e.g. the usage limit): an
+  // hour later the watch returns it again.
+  let since = null;
+  let again;
+  for (;;) {
+    again = await t.wait_events.handler({});
+    if (again.events.length || clock > 2 * 60 * 60_000) break;
+    assert.equal(again.timedOut, true);
+    since = store.state().stuckSince;
+  }
+  assert.ok(clock >= 60 * 60_000 && clock < 75 * 60_000);
+  assert.deepEqual(again.events.map((e) => e.todos.map((x) => [x.id, x.repeat])), [[[1, true]]]);
+  assert.ok(since);
+  assert.equal(store.state().stuckSince, since, 'a repeat is no news for the stuck count');
+  // Started: no longer returned.
+  await t.todo.handler({ action: 'update', id: 1, threadId: 'q' });
+  clock += 61 * 60_000;
+  assert.equal((await t.wait_events.handler({ wait: false })).events.length, 0);
+});
+
+test('list_sessions checks PR TODOs together, with a short gh timeout, and reuses a recent state', async () => {
+  const ghCalls = [];
+  const prs = { 7: 'OPEN', 8: 'MERGED' };
+  const t = todoTools({ prs, ghCalls });
+  await t.todo.handler({ action: 'add', text: 'A', when: { type: 'pr', pr: 7 }, cwd: '/repo' });
+  await t.todo.handler({ action: 'add', text: 'B', when: { type: 'pr', pr: 8 }, cwd: '/repo' });
+  ghCalls.length = 0;
+  prs[7] = 'MERGED';
+  const r = await t.list_sessions.handler({});
+  assert.deepEqual(r.todos.map((td) => td.due), [false, true], 'the state read a moment ago is used again');
+  assert.equal(ghCalls.length, 0);
+  clock += 61_000;
+  assert.deepEqual((await t.list_sessions.handler({})).todos.map((td) => td.due), [true, true]);
+  assert.deepEqual(ghCalls.map((c) => c.timeoutMs), [5000, 5000]);
 });
 
 test('a TODO waiting for the usage limit is due when the reset time passes or the usage is back', async () => {

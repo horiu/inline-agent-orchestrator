@@ -10,9 +10,11 @@ import { compareVersions } from './version.mjs';
 
 // anytime: no condition. usage: the usage limit is back (after `at`, the
 // reset time, when known). pr: PR `pr` is merged. version: this tool runs
-// `version` or newer (without it: a version other than the one it was added
-// under). restart: this tool was started again after the TODO was added (the
-// Claude desktop app, the terminal or Codex restarted, or a new conversation).
+// (has been loaded as) `version` or newer (without it: a version other than
+// the one it was added under); a version only on disk does not count, since
+// what the TODO checks needs the new version running. restart: this tool was
+// started again after the TODO was added (the Claude desktop app, the
+// terminal or Codex restarted).
 // at: date and time. room: free memory and CPU (and the usage limit, when
 // pauseAtPct is set) allow a new session.
 export const TODO_WHEN = ['anytime', 'usage', 'pr', 'version', 'restart', 'at', 'room'];
@@ -64,7 +66,7 @@ export function whenText(when) {
     case 'pr':
       return `PR #${when.pr}${when.repo ? `（${when.repo}）` : ''} がマージされたら`;
     case 'version':
-      return when.version ? `版 ${when.version} が入ったら` : '新しい版が入ったら';
+      return when.version ? `版 ${when.version} で動いたら（読み込んだら）` : '新しい版で動いたら（読み込んだら）';
     case 'restart':
       return '起動し直したら';
     case 'at':
@@ -78,7 +80,7 @@ export function whenText(when) {
 
 // Checks a TODO's condition: { due: true | false | null (unknown), detail }.
 // ctx: now(), running (this tool's version), startedAt (ms, when this server
-// started), usage() (the usage as be.usage gives it, or null when it cannot be
+// started), alive(pid), usage() (the usage as be.usage gives it, or null when it cannot be
 // read), prState(pr, repo, cwd) ('OPEN' / 'MERGED' / 'CLOSED' or null) and
 // room(todo) (a boolean).
 export async function checkTodo(todo, ctx) {
@@ -92,12 +94,14 @@ export async function checkTodo(todo, ctx) {
       return { due: ctx.now() >= at, detail: null };
     }
     case 'restart': {
-      // Every conversation starts its own server, so only the conversation
-      // that added the TODO can tell that it was started again.
-      if (todo.addedIn && ctx.conversation !== todo.addedIn)
-        return { due: null, detail: '足した会話とは別の会話からは分からない（足した会話で確かめるか、利用者に聞く）' };
+      // Every conversation starts its own server. A server started after the
+      // TODO, while the server that added it has gone (its conversation, or
+      // the app or terminal it ran in, was closed), sees a restart from any
+      // conversation; a new chat opened while the adding one still runs does
+      // not count.
       const added = Date.parse(todo.createdAt ?? '');
-      return { due: Number.isFinite(added) && ctx.startedAt > added, detail: null };
+      const gone = !todo.addedPid || !ctx.alive(todo.addedPid);
+      return { due: Number.isFinite(added) && ctx.startedAt > added && gone, detail: null };
     }
     case 'version': {
       if (!ctx.running) return { due: null, detail: 'この道具の版が分からない' };

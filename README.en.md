@@ -167,7 +167,7 @@ You can have the orchestrator note down work that stopped at a usage limit, or w
 👤 Start number 3
 ```
 
-- **Conditions** — Any time, once the usage limit resets, once PR #N is merged, once a new version is installed or after a restart, or at a date and time. The orchestrator checks them whenever it runs (when you type, on a notice, while monitoring). A merged PR is checked with `gh` (GitHub CLI)
+- **Conditions** — Any time, once the usage limit resets, once PR #N is merged, once a new version is running (loaded) or after a restart, or at a date and time. The orchestrator checks them whenever it runs (when you type, on a notice, while monitoring). A merged PR is checked with `gh` (GitHub CLI)
 - **The orchestrator adds its own** — When a worker session stops at a usage limit, when a start is held back for lack of room on the PC, when it shows a suggestion card, or when something needs your check (for example, what to verify after restarting the Claude desktop app), it adds a TODO. Work you already asked for (continuing after a usage limit, waiting for room, a card) goes ahead without asking once the condition is met
 - **Starting one** — "Start number 2" or "do that" turns the TODO into a request and starts a worker session (or, for a session you put on hold, asks that session to continue). When the worker session is done, the TODO is marked done too
 - **Where it is kept** — In `state.json` in the data folder, so it carries over when you start the orchestrator in a new chat. The handoff note `handoff.md` lists them too

@@ -5,9 +5,8 @@
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { cpus, freemem, totalmem } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { runClaude } from './backends/claude.mjs';
 import { codexBackend } from './backends/codex.mjs';
-import { ToolError } from './backends/common.mjs';
+import { ToolError, runCli } from './backends/common.mjs';
 import { DEFAULT_CONFIG, TARGET_STATUSES, WATCH_INTERVAL_MAX_MIN, pauseAtPctFor } from './state.mjs';
 import { TODO_WHEN, checkTodo, migrateLegacy, nextTodoId, whenText } from './todos.mjs';
 
@@ -28,8 +27,13 @@ const RULES_FILE = { codex: 'AGENTS.md', claude: 'CLAUDE.md' };
 const CPU_SAMPLE_MS = 1000;
 // A watch checks the TODO conditions that read gh or the usage this often.
 const TODO_CHECK_MS = 5 * 60_000;
+// A due TODO that is still open is returned again after this long.
+const TODO_RENOTIFY_MS = 60 * 60_000;
 // How much of handoff.md list_sessions returns.
 const HANDOFF_CHARS = 2000;
+// A PR state is read again after this long; a list waits for gh at most this long.
+const PR_CACHE_MS = 60_000;
+const LIST_GH_TIMEOUT_MS = 5000;
 
 // Sessions of the Claude Code desktop app are started, messaged and stopped
 // by the manager model with the app's own tools (mcp__ccd_*), which this
@@ -63,6 +67,17 @@ export function inGitRepo(dir) {
   }
 }
 
+// Whether a process runs (signal 0 only checks; EPERM means it runs as
+// another user).
+export function processAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return err.code === 'EPERM';
+  }
+}
+
 export function firstMessage(name, threadId, prompt) {
   const id = threadId ? `／ID: ${threadId}` : '';
   return `【監視役からの依頼】この会話の名前: ${name}${id}\n\n${prompt}`;
@@ -78,9 +93,12 @@ export function createTools({ backend, client, store, sys = {} }) {
   const inGit = sys.inGit ?? inGitRepo;
   const watchReports = sys.watchReports ?? ((onChange) => store.watchReports(onChange));
   // gh (GitHub CLI) for TODOs that wait for a PR to be merged.
-  const gh = sys.gh ?? ((args, opts) => runClaude('gh', args, opts));
-  // This server's start and its conversation, for TODOs that wait for a restart.
+  const gh = sys.gh ?? ((args, opts) => runCli('gh', args, opts));
+  // This server's start and process, for TODOs that wait for a restart: a
+  // server started after the TODO while the one that added it has gone.
   const startedAt = sys.startedAt ?? now();
+  const pid = sys.pid ?? process.pid;
+  const alive = sys.alive ?? processAlive;
   const conversationId = env.CLAUDE_CODE_SESSION_ID ?? env.CODEX_THREAD_ID ?? null;
   // Where Claude Code workers start by default: app sessions when this
   // manager runs in the desktop app, background sessions (claude --bg) in a
@@ -188,48 +206,73 @@ export function createTools({ backend, client, store, sys = {} }) {
   const usageForTodo = (td) => launcher !== 'app' || td.start?.via === 'bg';
   const roomTodos = (s) => (s.todos ?? []).filter((td) => td.status === 'open' && td.when?.type === 'room');
 
-  async function readPr(pr, repo, cwd) {
+  // A PR state read lately is used again (also an unreadable one, so a slow
+  // or missing gh does not hold up every list).
+  const prCache = new Map();
+  async function readPr(pr, repo, cwd, timeoutMs) {
+    const key = `${repo ?? cwd ?? ''}#${pr}`;
+    const hit = prCache.get(key);
+    if (hit && now() - hit.at < PR_CACHE_MS) return hit.state;
+    let state = null;
     try {
-      const res = await gh(['pr', 'view', String(pr), '--json', 'state', ...(repo ? ['-R', repo] : [])], { cwd: cwd ?? undefined, timeoutMs: 20000 });
-      return res.code === 0 ? JSON.parse(res.stdout).state ?? null : null;
+      const res = await gh(['pr', 'view', String(pr), '--json', 'state', ...(repo ? ['-R', repo] : [])], { cwd: cwd ?? undefined, timeoutMs });
+      state = res.code === 0 ? JSON.parse(res.stdout).state ?? null : null;
     } catch {
-      return null;
+      // unreadable: null
     }
+    prCache.set(key, { at: now(), state });
+    return state;
   }
 
-  // What checkTodo needs. PR states and the usage are read once per context.
-  function todoContext(room = async () => false) {
+  // What checkTodo needs. PR states and the usage are read once per context;
+  // a list for the user waits for gh less long than the watch does.
+  function todoContext(room = async () => false, { prTimeoutMs = 20000 } = {}) {
     const prs = new Map();
     let usage;
     return {
       now,
       running: sys.running ?? null,
       startedAt,
-      conversation: conversationId,
+      alive,
       async usage() {
         if (usage === undefined) usage = await be.usage().catch(() => null);
         return usage;
       },
       prState(pr, repo, cwd) {
         const key = `${repo ?? cwd ?? ''}#${pr}`;
-        if (!prs.has(key)) prs.set(key, readPr(pr, repo, cwd));
+        if (!prs.has(key)) prs.set(key, readPr(pr, repo, cwd, prTimeoutMs));
         return prs.get(key);
       },
       room,
     };
   }
 
-  // Open TODOs whose condition is met and that were not reported yet. Work
-  // waiting for room is reported as roomAvailable, and "anytime" is never
-  // reported: the manager mentions it when the user asks or at the end.
+  // Open TODOs whose condition is met and that were not reported lately. One
+  // reported TODO_RENOTIFY_MS ago and still open (not started, done or
+  // changed) comes again (repeat: true): the manager's turn may have ended
+  // before it acted, for instance at the usage limit. Work waiting for room is
+  // reported as roomAvailable, and "anytime" is never reported: the manager
+  // mentions it when the user asks or at the end.
   async function dueTodos(s, ctx) {
-    const out = [];
-    for (const td of s.todos ?? []) {
-      if (td.status !== 'open' || td.dueNotifiedAt || ['anytime', 'room'].includes(td.when?.type ?? 'anytime')) continue;
-      const c = await checkTodo(td, ctx);
-      if (c.due === true) out.push({ id: td.id, text: td.text, when: whenText(td.when), auto: Boolean(td.auto), threadId: td.threadId ?? null, start: td.start ?? null, detail: c.detail });
-    }
-    return out;
+    const waiting = (s.todos ?? []).filter((td) => {
+      if (td.status !== 'open' || ['anytime', 'room'].includes(td.when?.type ?? 'anytime')) return false;
+      const told = Date.parse(td.dueNotifiedAt ?? '');
+      return !Number.isFinite(told) || now() - told >= TODO_RENOTIFY_MS;
+    });
+    const checked = await Promise.all(waiting.map((td) => checkTodo(td, ctx)));
+    return waiting
+      .map((td, i) => ({ td, c: checked[i] }))
+      .filter(({ c }) => c.due === true)
+      .map(({ td, c }) => ({
+        id: td.id,
+        text: td.text,
+        when: whenText(td.when),
+        auto: Boolean(td.auto),
+        threadId: td.threadId ?? null,
+        start: td.start ?? null,
+        detail: c.detail,
+        repeat: Boolean(td.dueNotifiedAt),
+      }));
   }
 
   // A TODO started as a session follows it: done when the session is done.
@@ -434,6 +477,25 @@ export function createTools({ backend, client, store, sys = {} }) {
       async handler({ scope = 'managed', cwd, limit = 30, includeArchived = false }) {
         const state = loadState({ save: false });
         if (scope === 'managed') {
+          // The TODO conditions (gh, a CPU sample) are checked together, and
+          // while the sessions are read.
+          const rooms = new Map();
+          const room = (td) => {
+            // Room is read once for each way the work would start (the usage
+            // counts only for some, see usageForTodo).
+            const app = !usageForTodo(td);
+            if (!rooms.has(app)) rooms.set(app, guard({ app, live: false }).then((g) => g.canStartNew));
+            return rooms.get(app);
+          };
+          const ctx = todoContext(room, { prTimeoutMs: LIST_GH_TIMEOUT_MS });
+          const todosChecked = Promise.all(
+            state.todos
+              .filter((td) => td.status !== 'done' || includeArchived)
+              .map(async (td) => {
+                const c = td.status === 'open' ? await checkTodo(td, ctx) : { due: null, detail: null };
+                return { ...td, whenText: whenText(td.when), due: c.due, dueDetail: c.detail };
+              }),
+          );
           const sessions = [];
           for (const [id, target] of Object.entries(state.targets)) {
             if (target.status === 'pending' || target.status === 'done') {
@@ -446,22 +508,7 @@ export function createTools({ backend, client, store, sys = {} }) {
               sessions.push({ threadId: id, name: target.name, status: 'unreadable', error: err.message, managed: target });
             }
           }
-          // Room is read once for each way the work would start (the usage
-          // counts only for some, see usageForTodo).
-          const rooms = new Map();
-          const room = (td) => {
-            const app = !usageForTodo(td);
-            if (!rooms.has(app)) rooms.set(app, guard({ app, live: false }).then((g) => g.canStartNew));
-            return rooms.get(app);
-          };
-          const ctx = todoContext(room);
-          const todos = [];
-          for (const td of state.todos) {
-            if (td.status === 'done' && !includeArchived) continue;
-            const c = td.status === 'open' ? await checkTodo(td, ctx) : { due: null, detail: null };
-            todos.push({ ...td, whenText: whenText(td.when), due: c.due, dueDetail: c.detail });
-          }
-          return { sessions, todos, handoff: handoffGist() };
+          return { sessions, todos: await todosChecked, handoff: handoffGist() };
         }
         return { sessions: await be.listAll({ cwd, limit, includeArchived }, state.targets) };
       },
@@ -793,7 +840,7 @@ export function createTools({ backend, client, store, sys = {} }) {
 
     todo: {
       description:
-        'TODO（あとでやること）を書く。action="add": 足す（text と when。利用者の言葉を、あとで依頼の文にできる一言に）。"update": 直す（id と変える欄）。"done": 済ませる（id）。"remove": 消す（間違えて足したとき）。一覧は list_sessions の todos。when.type: anytime（いつでも）/ usage（利用枠が戻ったら。at に戻る時刻）/ pr（PR が merged になったら。pr と、cwd か repo）/ version（この道具が version 以上になったら。省くと今と違う版になったら）/ restart（この道具が起動し直したら）/ at（at の日時になったら）/ room（PC に余裕ができたら。断られた start_session が自分で足す）。条件がそろうと wait_events が todoDue（room は roomAvailable）で返す。auto=true は、そろったら聞かずに進める（利用者がすでに頼んだ仕事の続き）。',
+        'TODO（あとでやること）を書く。action="add": 足す（text と when。利用者の言葉を、あとで依頼の文にできる一言に）。"update": 直す（id と変える欄）。"done": 済ませる（id）。"remove": 消す（間違えて足したとき）。一覧は list_sessions の todos。when.type: anytime（いつでも）/ usage（利用枠が戻ったら。at に戻る時刻）/ pr（PR が merged になったら。pr と、cwd か repo）/ version（この道具が version 以上の版で動いたら＝読み込んだら。ディスクに入っただけでは数えない。省くと足したときと違う版で動いたら）/ restart（足したときの session-manager が終わり、そのあとに起動し直したら。足した会話を開いたまま新しい会話を始めただけでは数えない）/ at（at の日時になったら）/ room（PC に余裕ができたら。断られた start_session が自分で足す）。条件がそろうと wait_events が todoDue（room は roomAvailable）で返す。auto=true は、そろったら聞かずに進める（利用者がすでに頼んだ仕事の続き）。',
       inputSchema: {
         type: 'object',
         required: ['action'],
@@ -815,14 +862,18 @@ export function createTools({ backend, client, store, sys = {} }) {
           },
           cwd: { type: 'string', description: 'リポジトリのフォルダ（PR を調べる・作業の会話を起こす所）' },
           start: { type: 'object', description: '作業の会話を起こすときの start_session の値（name・prompt・profile など）' },
-          threadId: { type: 'string', description: 'つなぐ会話（続きを頼む会話・この TODO で起こした会話）' },
+          threadId: {
+            type: 'string',
+            description: 'つなぐ会話。add では続きを頼む会話（送ると進行中になる）、update ではこの TODO で起こした会話（すぐ進行中になる）',
+          },
           auto: { type: 'boolean', description: '条件がそろったら聞かずに進める（既定 false）' },
           by: { type: 'string', enum: ['user', 'manager'], description: '足したのは利用者か監視役か（既定 user）' },
           note: { type: 'string' },
           cardAt: { type: 'string', description: 'Claude のデスクトップアプリのカードで提案した日時' },
         },
+        additionalProperties: false,
       },
-      async handler({ action, id, when, ...fields }) {
+      async handler({ action, id, when, text, cwd, start, threadId, auto, by, note, cardAt }) {
         markActivity();
         const s = loadState();
         const at = new Date(now()).toISOString();
@@ -832,25 +883,29 @@ export function createTools({ backend, client, store, sys = {} }) {
           if (when.type === 'at' && !Number.isFinite(Date.parse(when.at ?? ''))) throw new ToolError('when.type at には at（日時）が要る');
           if (when.at !== undefined && !Number.isFinite(Date.parse(when.at))) throw new ToolError(`at（${when.at}）を日時として読めない。ISO 8601 で書く（例 2026-10-23T09:00:00+09:00）`);
         }
-        const clean = Object.fromEntries(Object.entries(fields).filter(([, v]) => v !== undefined));
+        // Only these fields come from the caller; status, links and the
+        // bookkeeping (createdAt, dueNotifiedAt, …) move only through the
+        // actions below and the session tools.
+        const clean = Object.fromEntries(Object.entries({ text, cwd, start, auto, note, cardAt }).filter(([, v]) => v !== undefined));
         // gh would otherwise read the PR of whatever repository this server runs in.
-        const prWithoutRepo = (cwd) => when?.type === 'pr' && !when.repo && !cwd;
+        const prWithoutRepo = (dir) => when?.type === 'pr' && !when.repo && !dir;
         if (action === 'add') {
           if (!clean.text) throw new ToolError('text（やること）が要る');
           if (prWithoutRepo(clean.cwd)) throw new ToolError('when.type pr には、cwd（リポジトリのフォルダ）か when.repo（owner/name）が要る');
           const todoId = nextTodoId(s);
           const td = {
             id: todoId,
-            by: 'user',
+            by: by ?? 'user',
             auto: false,
             ...clean,
             when: when ?? { type: 'anytime' },
             // With threadId it is "continue this session later": it starts
             // when a message is sent to the session.
+            ...(threadId ? { threadId } : {}),
             status: 'open',
             fromVersion: sys.running ?? null,
-            // A restart is seen only from the conversation that added it.
-            addedIn: conversationId,
+            // A restart is seen once this server (and its conversation) has gone.
+            addedPid: pid,
             createdAt: at,
             updatedAt: at,
           };
@@ -871,9 +926,13 @@ export function createTools({ backend, client, store, sys = {} }) {
         if (action === 'done') Object.assign(td, { status: 'done', doneAt: at, ...(clean.note ? { note: clean.note } : {}) });
         else {
           if (prWithoutRepo(clean.cwd ?? td.cwd)) throw new ToolError('when.type pr には、cwd（リポジトリのフォルダ）か when.repo（owner/name）が要る');
+          if (td.status === 'done' && (when !== undefined || threadId !== undefined))
+            throw new ToolError(`TODO ${id} は済んでいます。やり直すときは add で足す`);
           Object.assign(td, clean);
           // A new condition is checked again, and asked about again.
           if (when !== undefined) Object.assign(td, { when, dueNotifiedAt: null, waitSince: when.type === 'room' ? at : td.waitSince });
+          // Linking a session starts the TODO, as start_session's todo does.
+          if (threadId !== undefined) Object.assign(td, { threadId, status: 'started' });
         }
         td.updatedAt = at;
         store.saveState(s);
@@ -883,7 +942,7 @@ export function createTools({ backend, client, store, sys = {} }) {
 
     wait_events: {
       description:
-        '見回り。管理中の会話の状態の変化・作業の会話からの報告・承認や入力の待ち・空きメモリ不足・利用枠の超過（pauseAtPct があるとき）と回復・資源待ちの仕事（room の TODO）を起こせる余裕（roomAvailable）・条件がそろった TODO（todoDue。1件につき1回）を、起きるまで待って返す（報告は書かれたらすぐ）。wait=false なら待たずに、いま分かる出来事だけを返す（Claude のデスクトップアプリの監視役が、起きるたびに1回呼ぶ）。何も起きなければ最長 intervalMin 分（省略時は設定の watchIntervalMin。設定より長くはできない）で timedOut を返す。待つ間はモデルを使わない。動いている会話・判断待ちの会話（stopWhenStuckMin があるとき）・枠で止めた会話・資源待ちの仕事・未読の報告がどれも無ければすぐ idle=true を返す（見回りを止めてよい合図）。進められる仕事が無い（どの会話も利用者の判断・承認・入力か、メモリ・CPU の空きを待っている）まま設定の stopWhenStuckMin 分（既定 120）続くと、stuck=true と待っているもの（waiting）を返す（見回りを止める合図。呼び出しをまたいで数え、状態の変化・報告・send_message・start_session・update_session で数え直す）。同時に呼べるのは1つだけ（新しい呼び出しが前のものを打ち切る）。',
+        '見回り。管理中の会話の状態の変化・作業の会話からの報告・承認や入力の待ち・空きメモリ不足・利用枠の超過（pauseAtPct があるとき）と回復・資源待ちの仕事（room の TODO）を起こせる余裕（roomAvailable）・条件がそろった TODO（todoDue。1件につき1回。始める・済む・条件を直すまで、1時間ごとに repeat=true でまた返す）を、起きるまで待って返す（報告は書かれたらすぐ）。wait=false なら待たずに、いま分かる出来事だけを返す（Claude のデスクトップアプリの監視役が、起きるたびに1回呼ぶ）。何も起きなければ最長 intervalMin 分（省略時は設定の watchIntervalMin。設定より長くはできない）で timedOut を返す。待つ間はモデルを使わない。動いている会話・判断待ちの会話（stopWhenStuckMin があるとき）・枠で止めた会話・資源待ちの仕事・未読の報告がどれも無ければすぐ idle=true を返す（見回りを止めてよい合図）。進められる仕事が無い（どの会話も利用者の判断・承認・入力か、メモリ・CPU の空きを待っている）まま設定の stopWhenStuckMin 分（既定 120）続くと、stuck=true と待っているもの（waiting）を返す（見回りを止める合図。呼び出しをまたいで数え、状態の変化・報告・send_message・start_session・update_session で数え直す）。同時に呼べるのは1つだけ（新しい呼び出しが前のものを打ち切る）。',
       // Marked read-only for approval prompts: it changes no conversation's
       // content, only the manager's own read mark and last-seen statuses (and,
       // for Claude Code, it delivers messages the manager already queued).
@@ -1185,9 +1244,11 @@ export function createTools({ backend, client, store, sys = {} }) {
             if (!commit()) return cancel();
             return result;
           }
-          // Only a wait that ran its time out is a quiet timeout.
+          // Only a wait that ran its time out is a quiet timeout. TODOs told
+          // again are no news: they do not start the stuck count over.
           const quiet = wait && events.length === 0;
-          if (!commit(quiet)) return cancel();
+          const repeatsOnly = events.length > 0 && events.every((e) => e.type === 'todoDue' && e.todos.every((t) => t.repeat));
+          if (!commit(wait && (quiet || repeatsOnly))) return cancel();
           return { idle: false, events, live, paused, timedOut: quiet };
         } finally {
           closeWatch();
