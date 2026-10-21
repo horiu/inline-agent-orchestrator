@@ -70,9 +70,9 @@ Claude Code の作業の会話は、監視役がデスクトップ app で動い
 
 `session-manager` の `start_session` は app の会話を起こせないので、起こさずに `appStart`（app に渡す値）と `record`（記録の値）を返す。続けて:
 
-1. `mcp__ccd_session__start_session` を `appStart` の値で呼ぶ。`cwd` が監視役と同じフォルダなら `cwd` を省く。`model` が断られたら `model` を省いて呼び直す
+1. `mcp__ccd_session__start_session` を `appStart` の値で呼ぶ。`cwd` が監視役と同じフォルダなら `cwd` を省く。`permission_mode`・`model`・`effort` が断られたら（監視役の自分より上の権限モード・モデル・エフォートは使えない）、断られた値を省いて呼び直す（省くと監視役と同じになる）
 2. 返った session id（`local_…`）を threadId にして、`update_session` を `record` の値で呼ぶ（管理に加わり、見回りの対象になる）
-3. `mcp__ccd_sidebar__set_pinned`（session_id にその id、pinned true）でピン止めする。終わったら外す（4. の done）
+3. `mcp__ccd_sidebar__set_pinned`（session_id にその id、pinned true）でピン止めする。`done` にしたとき（報告が無くても）と、管理から外したとき（remove）に、pinned false で外す
 4. 利用者へ一言: 名前と、開くリンク `[名前](#local_…)`
 
 app が起こすのを断ったとき（利用者がリモート（Remote Control）から頼んだ・利用者の入力から始まったターンでない）:
@@ -102,7 +102,7 @@ app が起こすのを断ったとき（利用者がリモート（Remote Contro
 | --- | --- |
 | `report` progress | 状態は変えない。区切りの要点だけ利用者へ（毎回は伝えない。まとめて） |
 | `report` question | `update_session`（status `waiting_user`）。5. でまとめて聞く |
-| `report` done | `update_session`（status `done`、note に結果: ブランチ・PR・残り）。app の会話は `set_pinned`（pinned false）でピン止めを外す。利用者へ一言 |
+| `report` done | `update_session`（status `done`、note に結果: ブランチ・PR・残り）。app の会話は `set_pinned`（pinned false）でピン止めを外す（報告が無いまま終わっていたと分かって `done` にしたときも同じ）。利用者へ一言 |
 | `report` blocked | `read_session` で読み、直せる理由なら `send_message` で手を貸す。利用者の判断が要るなら 5. |
 | `status` が idle / notLoaded になった（done の報告が無い） | `read_session` で最後のやりとりを読む。`usageLimit` があり、最後のやりとりが途中で切れていれば（Codex はターンの error が利用制限なら）7.（`usageLimit` はログの文面からの推定。作業の中身で利用制限の話をしているだけのこともある）、質問で終わっていれば 5.、エラー・途中切れなら 6. |
 | `status` systemError／`turnCompleted` failed | `read_session` で読み、利用制限なら 7.、ほかは 6. |

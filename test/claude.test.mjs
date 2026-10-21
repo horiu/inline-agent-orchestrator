@@ -665,3 +665,27 @@ test('claude --bg is refused with a clear reason when the CLI is not logged in',
   await assert.rejects(tools.start_session.handler({ name: 'x', cwd: '/r', prompt: 'p' }), (e) => e instanceof ToolError && /ログインしていない/.test(e.message) && /via="app"/.test(e.message));
   assert.equal(calls('--bg').length, 0);
 });
+
+test('two sessions with the title: the newest is watched, but neither is bound until a report says which', async () => {
+  setup({}, DESKTOP);
+  await startInApp('同名');
+  for (const [sid, at] of [[APP_SID, 1000], ['bbbbbbbb-bbbb-4ccc-8ddd-eeeeeeeeeeee', 2000]])
+    fake.sessions.push({ pid: 9, cwd: '/x', kind: 'interactive', startedAt: clock + at, sessionId: sid, name: '同名', status: 'busy' });
+  clock += 10_000;
+  assert.equal((await backend.status(APP_ID, store.state().targets[APP_ID])).status, 'active');
+  assert.equal(store.state().targets[APP_ID].sessionId, undefined);
+  // read_reports binds too.
+  const worker = createTools({ backend, store, sys: { env: { CLAUDE_CODE_SESSION_ID: APP_SID } } }).tools;
+  await worker.report.handler({ kind: 'done', text: '済み', from: '同名' });
+  await tools.read_reports.handler({});
+  assert.equal(store.state().targets[APP_ID].sessionId, APP_SID);
+});
+
+test('a resume is refused with a clear reason when the CLI is not logged in', async () => {
+  await tools.start_session.handler({ name: 'r', cwd: '/r', prompt: 'p' });
+  fake.set(SID, { state: 'done', status: 'idle' });
+  fake.loggedIn = false;
+  clock += 10_000;
+  await assert.rejects(tools.send_message.handler({ threadId: SID, message: '続き' }), (e) => e instanceof ToolError && /ログインしていない/.test(e.message));
+  assert.equal(calls('--resume').length, 0);
+});

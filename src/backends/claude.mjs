@@ -184,12 +184,14 @@ export function claudeBackend({ store, claudePath = 'claude', permissionMode = '
     if (hit || target?.via !== 'app') return hit;
     // Until its first report gives the session ID, an app session is found
     // by its title (the name it was started with), started after the record.
+    // The ID is kept only when one session matches: another session of the
+    // same title must not take the record over.
     const since = Date.parse(target.startedAt ?? '') - 60_000;
     const byName = list
       .filter((e) => e.kind === 'interactive' && e.name === target.name && !(e.startedAt < since))
-      .sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0))[0];
-    if (byName?.sessionId) store.updateTarget(id, { sessionId: byName.sessionId });
-    return byName ?? null;
+      .sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0));
+    if (byName.length === 1 && byName[0].sessionId) store.updateTarget(id, { sessionId: byName[0].sessionId });
+    return byName[0] ?? null;
   }
 
   // A just-started app session that is not listed yet counts as working.
@@ -273,6 +275,7 @@ export function claudeBackend({ store, claudePath = 'claude', permissionMode = '
   // a copy and says so when the session is already running" (claude --help).
   // A different short id or session ID in the output means a copy: follow it.
   async function resume(id, target, sessionId, message, cwd) {
+    await ensureLoggedIn();
     // Only sessions this manager started (their record keeps the worker
     // instructions) are relaunched as workers; any other session keeps its own
     // permission mode and tools.
