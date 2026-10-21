@@ -333,7 +333,7 @@ Every call follows the official documentation (for Codex, `learn.chatgpt.com/doc
 - **Reports are exchanged only within the same machine**
 - **Built on experimental features** — Parts of the Codex app-server and Claude Code's agent view are experimental, and their behavior may change between versions
 - **`claude --bg` sessions do not appear in the desktop app** — They are not listed and cannot be pinned. In the desktop app, worker sessions start as app sessions
-- **A desktop app worker session waiting for approval looks busy to the watch** — Check the app's sidebar. The orchestrator reads a session that has been running long without a report
+- **In the desktop app, worker sessions can start only within a turn you typed** — The orchestrator keeps watching within that turn and starts the next tasks there. When it resumes from an app notice after the watch stopped, it shows suggestion cards instead
 - **Whether Claude Code worker sessions continue by themselves when the limit resets is unverified** — If they don't, the orchestrator asks them to carry on once it is back
 - **A new working folder must first be trusted on the PC (Claude Code)** — `claude --bg` cannot show the trust prompt. Trust is recorded per repository; trusting a parent folder does not cover the repositories under it. When you use the orchestrator remotely (Remote Control, a phone), use an already trusted repository as the working folder
 
