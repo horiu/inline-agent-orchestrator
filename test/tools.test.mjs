@@ -590,4 +590,20 @@ test('work waiting for memory or CPU keeps the watch going and is reported once 
   const r = await t.wait_events.handler({});
   assert.deepEqual(r.events.map((e) => [e.type, e.names, e.cpuPct]), [['roomAvailable', ['次'], 20]]);
   assert.equal((await t.wait_events.handler({})).timedOut, true, 'reported once');
+  // The same ID put back later is new work and is reported again.
+  await t.update_session.handler({ threadId: 'wait:次', remove: true });
+  clock += 1000;
+  await t.update_session.handler({ threadId: 'wait:次', name: '次', status: 'pending', waitForRoom: true });
+  assert.equal((await t.wait_events.handler({})).events[0]?.type, 'roomAvailable');
+});
+
+test('work waiting for the usage limit is reported only once usage is back under pauseAtPct', async () => {
+  store.updateTarget('wait:枠', { name: '枠', status: 'pending', waitForRoom: true, waitSince: 'x' });
+  fake.rateLimits.rateLimits.primary.usedPercent = 96;
+  const blocked = await tools.wait_events.handler({});
+  assert.equal(blocked.idle, false);
+  assert.deepEqual(blocked.events.map((e) => e.type), ['usageHigh']);
+  fake.rateLimits.rateLimits.primary.usedPercent = 10;
+  const r = await tools.wait_events.handler({});
+  assert.deepEqual(r.events.map((e) => [e.type, e.names]), [['roomAvailable', ['枠']]]);
 });

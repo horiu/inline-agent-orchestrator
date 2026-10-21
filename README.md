@@ -296,7 +296,7 @@ Claude Code にも Codex にも、AI が別のセッションを操作するた�
 - MCP サーバーはアプリのツールを呼べないため、デスクトップアプリでは `start_session` がアプリに渡す値を返し、オーケストレーターがアプリの `start_session` で起動して、`update_session` で記録します。状態は `claude agents --json` の会話の行（busy・idle）で見ます。アプリの会話の ID（`local_…`）と Claude Code のセッション ID は別のため、最初は題名で探し、作業セッションの `report` が送るセッション ID で結び付けます
 
 - 作業セッションからの報告は、報告専用の `session-report` 接続の `report` ツールがファイルに書き込み、オーケストレーターが読み取ります。Claude Code・Codex ともに、この接続では `report` だけを公開し、作業セッションの `session-manager` は無効にしています。ただし、デスクトップアプリの作業セッションには起動時に接続を足せないため、プラグインの `session-manager` の `report` を使います（ほかのツールは使わないよう依頼に書きます）。アプリの会話には起動時に許可するツールを渡せないため、プラグインのフック（`hooks/hooks.json`、PreToolUse）がこの `report` だけを確認なしで許可します（報告用のファイルに追記するだけのツールです）
-- 空きメモリや CPU が足りずに起動を待たせた作業があるあいだは、監視を続けて資源を見回り、余裕ができるとオーケストレーターに知らせて起動させます
+- 空きメモリ・CPU・利用枠が足りずに起動を待たせた作業があるあいだは、監視を続けて資源を見回り、余裕ができるとオーケストレーターに知らせて起動させます
 - Claude Code の使用量は CLI からは取得できず、status line に渡される値が唯一の公式な取得手段です。そのため `pauseAtPct` を使う場合は status line を設定します。元の status line は保存しておき、その表示を引き続き出力します。デスクトップアプリは status line を表示しないため、使用量は記録されません
 - Claude Code の作業セッションが利用制限で止まったかは、`claude logs` の末尾にある「Usage limit reached」などの文面から推定します（`read_session` の `usageLimit`）。文面は公開された仕様ではないため、変わると見分けられなくなります
 - Claude Code の作業セッションは、編集の前に `.claude/worktrees/` に worktree を作成し、その中で作業します（agent view の既定の動作）

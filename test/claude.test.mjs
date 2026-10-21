@@ -88,7 +88,7 @@ function setup(config = {}, env = {}) {
   ({ tools } = createTools({
     backend,
     store,
-    sys: { freemem: () => 8 * GB, totalmem: () => 16 * GB, now: () => clock, sleep: async (ms) => (clock += ms), env, cpus: idleCpus },
+    sys: { freemem: () => 8 * GB, totalmem: () => 16 * GB, now: () => clock, sleep: async (ms) => (clock += ms), env, cpus: idleCpus, inGit: (dir) => !dir.startsWith('/plain') },
   }));
 }
 
@@ -601,6 +601,9 @@ test('in the desktop app, start_session returns what to pass to the app instead 
   assert.ok(a.background.length >= 80, 'the app needs at least 80 characters of background');
   assert.deepEqual(r.record, { name: '画面の確認', status: 'running', via: 'app', cwd: '/repo', area: 'ui', profile: 'implement', model: 'opus', effort: 'medium' });
   assert.match(r.next, /set_pinned/);
+  // A folder outside git gets no worktree.
+  const plain = await tools.start_session.handler({ name: '調べもの', cwd: '/plain/notes', prompt: 'p' });
+  assert.equal(plain.appStart.use_worktree, false);
   // The guard still applies, and via="bg" keeps the old way.
   const bg = await tools.start_session.handler({ name: '別', cwd: '/repo', prompt: 'p', via: 'bg' });
   assert.equal(bg.started, true);
@@ -691,4 +694,28 @@ test('a resume is refused with a clear reason when the CLI is not logged in', as
   clock += 10_000;
   await assert.rejects(tools.send_message.handler({ threadId: SID, message: '続き' }), (e) => e instanceof ToolError && /ログインしていない/.test(e.message));
   assert.equal(calls('--resume').length, 0);
+});
+
+test('in the desktop app, a usage.json left over from the terminal does not hold back starts', async () => {
+  setup({ pauseAtPct: 50 }, DESKTOP);
+  writeFileSync(join(store.dir, 'usage.json'), JSON.stringify({ updatedAt: new Date(clock).toISOString(), rate_limits: { five_hour: { used_percentage: 99, resets_at: clock / 1000 + 3600 } } }));
+  const u = await tools.get_usage.handler({});
+  assert.equal(u.pauseAtPct, null);
+  assert.equal(u.canStartNew, true);
+  assert.equal((await tools.start_session.handler({ name: 'a', cwd: '/r', prompt: 'p' })).startInApp, true);
+  // A terminal launch still honours it.
+  const bg = await tools.start_session.handler({ name: 'b', cwd: '/r', prompt: 'p', via: 'bg' });
+  assert.equal(bg.started, false);
+  assert.match(bg.reasons[0], /99%/);
+});
+
+test('a report under a bound name from another session does not move the binding', async () => {
+  setup({}, DESKTOP);
+  await startInApp('結びつけ');
+  const as = (sid) => createTools({ backend, store, sys: { env: { CLAUDE_CODE_SESSION_ID: sid } } }).tools;
+  await as(APP_SID).report.handler({ kind: 'progress', text: '本物', from: '結びつけ' });
+  await tools.read_reports.handler({});
+  await as('cccccccc-bbbb-4ccc-8ddd-eeeeeeeeeeee').report.handler({ kind: 'progress', text: '別の会話', from: '結びつけ' });
+  await tools.read_reports.handler({});
+  assert.equal(store.state().targets[APP_ID].sessionId, APP_SID);
 });

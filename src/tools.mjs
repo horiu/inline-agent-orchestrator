@@ -2,7 +2,9 @@
 // of the same coding agent (Codex or Claude Code, see src/backends/), plus one
 // tool (`report`) for the worker conversations to report back.
 
+import { existsSync } from 'node:fs';
 import { cpus, freemem, totalmem } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
 import { codexBackend } from './backends/codex.mjs';
 import { ToolError } from './backends/common.mjs';
 import { DEFAULT_CONFIG, TARGET_STATUSES, WATCH_INTERVAL_MAX_MIN, pauseAtPctFor } from './state.mjs';
@@ -37,6 +39,15 @@ export function workerInstructions(name, agent = 'codex', { app = false } = {}) 
   ].join('\n');
 }
 
+// Whether the folder is inside a git work tree (a `.git` folder, or the
+// `.git` file of a worktree, in it or a parent).
+export function inGitRepo(dir) {
+  for (let d = resolve(dir); ; d = dirname(d)) {
+    if (existsSync(join(d, '.git'))) return true;
+    if (dirname(d) === d) return false;
+  }
+}
+
 export function firstMessage(name, threadId, prompt) {
   const id = threadId ? `／ID: ${threadId}` : '';
   return `【監視役からの依頼】この会話の名前: ${name}${id}\n\n${prompt}`;
@@ -49,6 +60,7 @@ export function createTools({ backend, client, store, sys = {} }) {
   const env = sys.env ?? process.env;
   const sleep = sys.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
   const now = sys.now ?? (() => Date.now());
+  const inGit = sys.inGit ?? inGitRepo;
   // Where Claude Code workers start by default: app sessions when this
   // manager runs in the desktop app, background sessions (claude --bg) in a
   // terminal.
@@ -83,9 +95,17 @@ export function createTools({ backend, client, store, sys = {} }) {
 
   // An app worker's report carries its Claude Code session ID, which links
   // the record to its row in `claude agents` (the app's own ID is different).
+  // Only the first one counts: `from` is written by the caller, so a later
+  // report under the same name from another session must not move it.
   function bindReporter(report, threadId) {
     const t = threadId ? store.state().targets[threadId] : null;
-    if (t?.via === 'app' && report.sessionId && t.sessionId !== report.sessionId) store.updateTarget(threadId, { sessionId: report.sessionId });
+    if (t?.via === 'app' && report.sessionId && !t.sessionId) store.updateTarget(threadId, { sessionId: report.sessionId });
+  }
+
+  // The desktop app draws no status line, so usage.json there can only be
+  // left over from the terminal: pauseAtPct does not apply to app launches.
+  function pauseAtFor(cfg, app) {
+    return app ? null : pauseAtPctFor(cfg, be.agent);
   }
 
   async function liveStatuses(ids, targets) {
@@ -135,9 +155,9 @@ export function createTools({ backend, client, store, sys = {} }) {
   // Load guard: free memory, CPU (when maxCpuPct is set) and usage limits
   // (when pauseAtPct is set for this agent). The number of running
   // conversations is reported but does not limit anything.
-  async function guard() {
+  async function guard({ app = launcher === 'app' } = {}) {
     const cfg = store.config();
-    const pauseAt = pauseAtPctFor(cfg, be.agent);
+    const pauseAt = pauseAtFor(cfg, app);
     const maxCpu = typeof cfg.maxCpuPct === 'number' ? cfg.maxCpuPct : null;
     const state = store.state();
     const live = await liveStatuses(watchedIds(state), state.targets);
@@ -276,7 +296,7 @@ export function createTools({ backend, client, store, sys = {} }) {
         );
         if (clash) throw new ToolError(`「${name}」は管理中の会話（${clash[0]}）と同じ名前です。別の名前にしてください`);
         if (!force) {
-          const g = await guard();
+          const g = await guard({ app: be.agent === 'claude' && (via ?? launcher) === 'app' });
           if (!g.canStartNew) return { started: false, reasons: g.reasons, guard: g };
         }
         const d = cfg.defaults;
@@ -290,7 +310,8 @@ export function createTools({ backend, client, store, sys = {} }) {
             title: name,
             prompt: firstMessage(name, null, prompt),
             background: workerInstructions(name, be.agent, { app: true }),
-            use_worktree: true,
+            // A worktree needs a git repository; other folders are used as they are.
+            use_worktree: inGit(cwd),
             cwd,
             permission_mode: permissionMode ?? cfg.claude?.permissionMode,
             ...(useModel ? { model: useModel } : {}),
@@ -486,7 +507,9 @@ export function createTools({ backend, client, store, sys = {} }) {
         const clean = Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined));
         // A newly added app session counts as working, so the watch reports
         // the end of its first turn.
-        if (clean.via === 'app' && !store.state().targets[threadId])
+        const prev = store.state().targets[threadId];
+        if (clean.waitForRoom && !prev?.waitForRoom) clean.waitSince = new Date(now()).toISOString();
+        if (clean.via === 'app' && !prev)
           Object.assign(clean, { startedAt: new Date(now()).toISOString(), lastSeen: { status: 'active', activeFlags: [] } });
         return { threadId, target: store.updateTarget(threadId, clean) };
       },
@@ -512,7 +535,7 @@ export function createTools({ backend, client, store, sys = {} }) {
         const stale = () => myGen !== waitGen || Boolean(signal?.aborted);
         const aborted = signal ? new Promise((r) => signal.addEventListener('abort', r, { once: true })) : null;
         const cfg = store.config();
-        const pauseAt = pauseAtPctFor(cfg, be.agent);
+        const pauseAt = pauseAtFor(cfg, launcher === 'app');
         const maxMin = Math.min(Math.max(Number(cfg.watchIntervalMin) || DEFAULT_CONFIG.watchIntervalMin, 0), WATCH_INTERVAL_MAX_MIN);
         const limitMin = intervalMin > 0 ? Math.min(intervalMin, maxMin) : maxMin;
         const deadline = now() + limitMin * 60_000;
@@ -528,6 +551,10 @@ export function createTools({ backend, client, store, sys = {} }) {
         const events = [];
         let reportsOffset = null;
         const alerts = { memoryLow: false, usageHigh: [], ...(state.alerts ?? {}) };
+        // roomAvailable fires once per set of waiting records; a record put
+        // back under the same ID later is new work (waitSince differs).
+        const roomKey = waitingRoom.map((id) => `${id}@${state.targets[id].waitSince ?? ''}`).sort().join(',');
+        if (!waitingRoom.length) alerts.roomAvailable = null;
         const byName = namesToIds(state);
         const unsubscribe = be.onEvent((msg) => {
           const p = msg.params ?? {};
@@ -589,6 +616,7 @@ export function createTools({ backend, client, store, sys = {} }) {
           // state.json), so a lasting condition does not wake the manager on
           // every call.
           let usageChecked = false;
+          let usageBlocked = false;
           for (;;) {
             if (stale()) return cancelled;
             try {
@@ -612,22 +640,6 @@ export function createTools({ backend, client, store, sys = {} }) {
             if (low && !alerts.memoryLow)
               events.push({ type: 'memoryLow', freeMemGb: Number(freeGb.toFixed(2)), minFreeMemGb: cfg.minFreeMemGb });
             alerts.memoryLow = low;
-            if (waitingRoom.length) {
-              const maxCpu = typeof cfg.maxCpuPct === 'number' ? cfg.maxCpuPct : null;
-              const cpu = !low && maxCpu !== null ? await cpuPct() : null;
-              const room = !low && (cpu === null || cpu < maxCpu);
-              // Once per set of waiting work, not on every call.
-              const key = waitingRoom.slice().sort().join(',');
-              if (room && alerts.roomAvailable !== key)
-                events.push({
-                  type: 'roomAvailable',
-                  threadIds: waitingRoom,
-                  names: waitingRoom.map((id) => state.targets[id]?.name ?? null),
-                  freeMemGb: Number(freeGb.toFixed(2)),
-                  cpuPct: cpu,
-                });
-              alerts.roomAvailable = room ? key : null;
-            }
             if (!usageChecked) {
               usageChecked = true;
               // Without pauseAtPct nothing waits on the usage, so it is not
@@ -647,6 +659,7 @@ export function createTools({ backend, client, store, sys = {} }) {
                 const fresh = over.filter((_, i) => !alerts.usageHigh.includes(keys[i]));
                 if (fresh.length) events.push({ type: 'usageHigh', windows: fresh, pauseAtPct: pauseAt });
                 alerts.usageHigh = keys;
+                usageBlocked = over.length > 0 || u?.ordinaryUsageAllowed === false;
                 // Once per set of paused threads, not on every call.
                 const recoveredKey = paused.slice().sort().join(',');
                 const usable = !u || (u.ordinaryUsageAllowed !== false && !u.stale);
@@ -662,6 +675,20 @@ export function createTools({ backend, client, store, sys = {} }) {
                   alerts.usageRecovered = null;
                 }
               }
+            }
+            if (waitingRoom.length) {
+              const maxCpu = typeof cfg.maxCpuPct === 'number' ? cfg.maxCpuPct : null;
+              const cpu = !low && !usageBlocked && maxCpu !== null ? await cpuPct() : null;
+              const room = !low && !usageBlocked && (cpu === null || cpu < maxCpu);
+              if (room && alerts.roomAvailable !== roomKey)
+                events.push({
+                  type: 'roomAvailable',
+                  threadIds: waitingRoom,
+                  names: waitingRoom.map((id) => state.targets[id]?.name ?? null),
+                  freeMemGb: Number(freeGb.toFixed(2)),
+                  cpuPct: cpu,
+                });
+              alerts.roomAvailable = room ? roomKey : null;
             }
             if (events.length || now() >= deadline) break;
             const pause = sleep(Math.min(cfg.pollSec * 1000, Math.max(0, deadline - now())));
