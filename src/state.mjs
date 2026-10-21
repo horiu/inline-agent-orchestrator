@@ -16,7 +16,14 @@ export const DEFAULT_CONFIG = {
   },
   maxRunning: 3,
   minFreeMemGb: 2,
-  pauseAtPct: 95,
+  // Usage (%) at which the manager starts nothing new and stops the running
+  // sessions, per agent; null never stops for usage. Off for Claude Code: it
+  // continues a session by itself when the limit resets, and stopping is no
+  // pause (the running turn is cut off and loses the same as a failed one).
+  // On for Codex, where a manager stopped by the limit is not known to come
+  // back by itself: stopping short of it leaves the manager some usage, and
+  // the watch waits without the model and wakes it with usageRecovered.
+  pauseAtPct: { claude: null, codex: 95 },
   defaults: {
     sandbox: 'workspace-write',
     approvalPolicy: 'never',
@@ -71,6 +78,14 @@ export const WATCH_INTERVAL_MAX_MIN = 60;
 // paused = stopped by hand; paused_usage = stopped for the usage limit (the
 // watch keeps going and reports usageRecovered when the limit resets).
 export const TARGET_STATUSES = ['running', 'waiting_user', 'done', 'pending', 'paused', 'paused_usage', 'failed'];
+
+// pauseAtPct for one agent. config.json may give a number or null for every
+// agent, or { claude, codex }.
+export function pauseAtPctFor(cfg, agent) {
+  const v = cfg.pauseAtPct;
+  const pct = v && typeof v === 'object' ? v[agent] : v;
+  return typeof pct === 'number' ? pct : null;
+}
 
 // Which agent this server manages: CSM_AGENT=claude|codex (default codex).
 export function agentOf(env = process.env) {
@@ -133,6 +148,13 @@ export class Store {
       ...user,
       defaults: { ...DEFAULT_CONFIG.defaults, ...(user.defaults ?? {}) },
       claude: { ...DEFAULT_CONFIG.claude, ...(user.claude ?? {}) },
+      // { claude: 90 } keeps the built-in value for the other agent.
+      pauseAtPct:
+        user.pauseAtPct && typeof user.pauseAtPct === 'object'
+          ? { ...DEFAULT_CONFIG.pauseAtPct, ...user.pauseAtPct }
+          : Object.hasOwn(user, 'pauseAtPct')
+            ? user.pauseAtPct
+            : DEFAULT_CONFIG.pauseAtPct,
       // A profile the user writes replaces the built-in one of the same name;
       // `null` removes it.
       profiles: Object.fromEntries(

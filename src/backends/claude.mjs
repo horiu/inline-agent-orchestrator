@@ -6,7 +6,8 @@
 //   claude logs <id>                            recent output
 //   claude stop <id>                            stop a session
 // Plan limits are not available from the CLI; the status line script
-// (src/claude-statusline.mjs) records `rate_limits` into usage.json.
+// (src/claude-statusline.mjs) records `rate_limits` into usage.json. The
+// desktop app draws no status line, so there usage.json is never written.
 
 import { spawn } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
@@ -36,6 +37,33 @@ const WAITING_FLAG = {
   'input needed': 'waitingOnUserInput',
 };
 
+// Wording Claude Code uses when a plan limit stops a session ("Usage limit
+// reached", "5-hour limit reached · resets 5pm", "You've hit your limit").
+// The exact text is not documented, so this only gives the manager a hint.
+const USAGE_LIMIT = /usage limit reached|limit reached\s*[·∙•]|hit your (?:usage )?limit|out of usage credits/i;
+const USAGE_LIMIT_TAIL = 2000;
+
+// A session waiting for the limit to reset continues by itself; it must not
+// be reported as waiting for the user.
+const waitingFlag = (waitingFor) => WAITING_FLAG[waitingFor] ?? (/limit/i.test(waitingFor) ? 'waitingOnUsageLimit' : 'waitingOnUserInput');
+
+// Trust is kept per folder in ~/.claude.json and, inside a git repository,
+// is looked up only up to the repository root: trusting a parent folder of
+// the repositories does not cover them.
+function untrustedMessage(cwd) {
+  return [
+    `作業フォルダ ${cwd} が Claude Code に信頼されていないため、作業の会話を起こせません（claude --bg は信頼の確認を出せない）。`,
+    `利用者に、この PC のターミナルで ${cwd} に移って claude を一度起動し、信頼の確認で承認してから終了してもらう。承認の後にもう一度 start_session を呼ぶ。`,
+    '信頼はリポジトリごと（リポジトリを置く親フォルダを信頼しても、その下のリポジトリには効かない）。',
+    'リモート（Remote Control やスマートフォン）から使っていて、利用者がその場で承認できないときは、信頼済みのリポジトリを作業フォルダにするか、PC に戻ってから承認してもらう。',
+  ].join('\n');
+}
+
+export function usageLimitLine(log) {
+  const lines = log.slice(-USAGE_LIMIT_TAIL).split(/\r?\n/);
+  return lines.findLast((l) => USAGE_LIMIT.test(l))?.trim() ?? null;
+}
+
 // Runs the CLI without a shell (arguments contain prompts and JSON).
 // claudePath: "claude" / an absolute path to claude(.exe), or an argv prefix.
 export function runClaude(claudePath, args, { cwd, timeoutMs = 60000 } = {}) {
@@ -64,7 +92,7 @@ export function runClaude(claudePath, args, { cwd, timeoutMs = 60000 } = {}) {
 function mapEntry(e) {
   if (!e) return { status: 'notLoaded', activeFlags: [] };
   if (e.state === 'failed') return { status: 'systemError', activeFlags: [] };
-  const flag = e.waitingFor ? WAITING_FLAG[e.waitingFor] ?? 'waitingOnUserInput' : null;
+  const flag = e.waitingFor ? waitingFlag(e.waitingFor) : null;
   if (e.state === 'blocked') return { status: 'active', activeFlags: [flag ?? 'waitingOnUserInput'] };
   if (e.state === 'working') return { status: 'active', activeFlags: e.status === 'waiting' && flag ? [flag] : [] };
   return { status: 'idle', activeFlags: [] }; // done / stopped
@@ -255,13 +283,19 @@ export function claudeBackend({ store, claudePath = 'claude', permissionMode = '
       const jobId = entry?.id ?? target?.jobId;
       if (!jobId) throw new ToolError(`会話 ${id} はバックグラウンドの一覧にありません（claude --resume ${id} で開けます）`);
       const log = await cli(['logs', jobId]);
-      return { session: summarize(entry, id, target), log: tail(log, maxChars) };
+      return { session: summarize(entry, id, target), usageLimit: usageLimitLine(log), log: tail(log, maxChars) };
     },
 
     async start({ name, cwd, model, effort, permissionMode: mode, instructions, firstMessage }, { onCreated }) {
       const options = { instructions, model, effort, permissionMode: mode ?? permissionMode };
       const args = ['--bg', ...workerOptions(options), '--name', name, firstMessage(null)];
-      const out = await cli(args, { cwd });
+      let out;
+      try {
+        out = await cli(args, { cwd });
+      } catch (err) {
+        if (/not trusted/i.test(err.message)) throw new ToolError(untrustedMessage(cwd));
+        throw err;
+      }
       const jobId = SHORT_ID.exec(out)?.[1] ?? null;
       let sessionId = UUID.exec(out)?.[0] ?? null;
       // Look the new session up to learn both ids.
@@ -320,7 +354,8 @@ export function claudeBackend({ store, claudePath = 'claude', permissionMode = '
       const path = join(store.dir, 'usage.json');
       if (!existsSync(path))
         throw new Error(
-          `利用枠がまだ記録されていません。利用者の了承を得てから、次のコマンドで status line を設定してください（~/.claude/settings.json の statusLine を変える。前の表示は残る）: node "${SETUP_PATH}" statusline`,
+          `利用枠がまだ記録されていません。利用者の了承を得てから、次のコマンドで status line を設定してください（~/.claude/settings.json の statusLine を変える。前の表示は残る）: node "${SETUP_PATH}" statusline` +
+            '。status line はターミナルの Claude Code でだけ描かれる。デスクトップ app では描かれず記録されないので、設定を求めない',
         );
       const data = JSON.parse(readFileSync(path, 'utf8'));
       const windows = [];

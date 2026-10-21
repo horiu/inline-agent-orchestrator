@@ -16,7 +16,7 @@ When you run several tasks in parallel with Claude Code or Codex, do you end up 
 - **The UI you already use** — There is no separate app or screen. You keep using Claude Code and Codex as they are, with no tmux or background service to run
 - **A session for each task** — Splits your request into tasks, picks a name, working folder and model for each, and runs them in separate sessions
 - **Questions batched, with a recommendation** — Gathers every session's "how should I proceed?" and asks them in one go, with options and a recommendation. Once you answer, each task picks up where it left off
-- **Easy on your machine and your plan limits** — Keeps an eye on how many sessions run at once, free memory, and the 5-hour and weekly usage limits. Pauses as a limit approaches and resumes once it resets
+- **Easy on your machine and your plan limits** — Keeps an eye on how many sessions run at once and on free memory. Work stopped by a usage limit is picked up where it left off once the limit resets ([Usage limits](#usage-limits))
 - **Stalled work gets back on track** — Notices sessions that crashed or stopped midway and asks them to carry on from where they stopped
 - **Only Node.js required** — No other packages, so it stays light
 
@@ -67,7 +67,7 @@ claude plugin install inline-agent-orchestrator --marketplace horiu/inline-agent
 
 In VS Code, you can also install it from the screen that opens when you type `/plugins` in the chat box: add `horiu/inline-agent-orchestrator` on the Marketplaces tab, then install it from the Plugins tab.
 
-The first time you use it, the orchestrator asks for permission to set up a status line so it can read your usage. Once you allow it, the status line is configured, and your current status line keeps showing as before.
+With Claude Code, the orchestrator does not read your usage by default ([Usage limits](#usage-limits)). Only if you set `pauseAtPct` and use the terminal does it ask for permission to set up a status line so it can read your usage. Once you allow it, the status line is configured, and your current status line keeps showing as before. The desktop app does not show a status line, so usage cannot be read there even with it set up.
 
 <details>
 <summary>Using Claude Code 2.1.257–2.1.274</summary>
@@ -113,7 +113,7 @@ In a new session, type the command below into the chat box, then describe the ta
 
 The orchestrator splits the work, starts worker sessions, and begins monitoring. Saying how far each task should go — "up to opening a PR", "investigate and report" — keeps the work moving without stopping midway.
 
-The orchestrator session is named `Manager`. Claude Code does not let a tool rename a session, so when prompted, type `/rename Manager` into the chat box.
+The orchestrator session is named `Manager`. In the Claude Code desktop app this happens automatically. Claude Code in the terminal does not let a tool rename a session, so when prompted, type `/rename Manager` into the chat box.
 
 ### While it runs
 
@@ -142,7 +142,7 @@ You can also point to another location with the `CSM_HOME` environment variable.
 | --- | --- | --- |
 | `maxRunning` | `3` | Maximum number of worker sessions running at once |
 | `minFreeMemGb` | `2` | No new sessions are started while free memory (GB) is below this value |
-| `pauseAtPct` | `95` | When usage reaches this percentage, no new sessions are started and running sessions are paused |
+| `pauseAtPct` | Claude Code: `null`<br>Codex: `95` | When usage reaches this percentage, no new sessions are started and running sessions are stopped. `null` never stops for usage. A number applies to both; write `{ "claude": 90 }` to change one only ([Usage limits](#usage-limits)) |
 | `watchIntervalMin` | `30` | How often the orchestrator checks in when nothing happens (minutes, max 60) |
 | `pollSec` | `5` | How often session status is checked (seconds) |
 | `profiles` | See below | Model and effort for each kind of task |
@@ -206,6 +206,15 @@ While monitoring, it is the MCP server — not the model — that checks session
 
 When nothing happens, the orchestrator checks in every `watchIntervalMin` minutes and rereads the whole conversation each time. The shorter the interval, the more usage it consumes even when nothing changes (60 times an hour at 1-minute intervals, twice an hour at 30 minutes). The maximum is 60 minutes because beyond that the prompt cache expires before the reread, which ends up costing more. To shorten it temporarily, just ask, for example "check every 10 minutes".
 
+### Usage limits
+
+Stopping a running session part-way is not a pause. The running turn is cut off, and what it had read and worked out in that turn is lost — exactly as when a usage limit stops it. Code already written to the working tree stays in either case.
+
+- **Claude Code (default: never stop)** — When the limit is reached, worker sessions and the orchestrator stop. The orchestrator session comes back through Claude Code's "continue automatically when the limit resets". It then finds the worker sessions stopped by the limit and asks each to check `git status` and `git diff` and carry on from where it stopped
+- **Codex (default: stop at 95%)** — Whether a Codex orchestrator stopped by the limit comes back by itself has not been checked, so worker sessions are still stopped just short of the limit. The orchestrator keeps some usage, the watch continues without the model, and once the limit resets the orchestrator asks the sessions to resume
+
+To stop short of the limit anyway — for example, to keep the rest of your usage for other work — set `pauseAtPct` in `config.json`, or tell the orchestrator something like "stop at 90%". Reading Claude Code usage needs the status line, which does not work in the desktop app.
+
 ## Updating and uninstalling
 
 ### Claude Code
@@ -267,7 +276,8 @@ Neither Claude Code nor Codex ships a tool that lets the AI operate other sessio
 | How usage is read | From app-server | From `usage.json`, written by the status line |
 
 - Reports are written to a file by the `report` tool on the dedicated `session-report` connection and read by the orchestrator. In both Claude Code and Codex, this connection exposes only `report`, and the worker's `session-manager` is disabled
-- Claude Code usage cannot be read from the CLI; the values passed to the status line are the only official source. That is why a status line is set up on first use. Your previous status line is saved and its output keeps being shown
+- Claude Code usage cannot be read from the CLI; the values passed to the status line are the only official source. That is why a status line is set up when you use `pauseAtPct`. Your previous status line is saved and its output keeps being shown. The desktop app shows no status line, so no usage is recorded there
+- Whether a Claude Code worker session was stopped by a usage limit is inferred from wording such as "Usage limit reached" near the end of `claude logs` (`usageLimit` in `read_session`). The wording is not a published interface, so a change to it would go unnoticed
 - Claude Code worker sessions create a worktree under `.claude/worktrees/` before editing and work inside it (the default behavior of agent view)
 
 <details>
@@ -281,9 +291,9 @@ Neither Claude Code nor Codex ships a tool that lets the AI operate other sessio
 | `send_message` | Orchestrator | Send after the current turn to a running session, or as a continuation to a stopped one. Can also change the model or effort | `thread/queue/add`, `turn/start`, `turn/steer` | Held, then `claude --resume --bg` |
 | `stop_session` | Orchestrator | Stop the running turn | `turn/interrupt` | `claude stop` |
 | `set_session_name` | Orchestrator | Rename a session | `thread/name/set` | Record only |
-| `get_usage` | Orchestrator | Usage, free memory, number of running sessions, whether a new one may start, and the list of profiles | `account/rateLimits/read` | `usage.json` |
+| `get_usage` | Orchestrator | Usage, free memory, number of running sessions, whether a new one may start (usage counts only with `pauseAtPct`), and the list of profiles | `account/rateLimits/read` | `usage.json` |
 | `update_session` | Orchestrator | Update the record (status, notes, on hold) | `state.json` | `state.json` |
-| `wait_events` | Orchestrator | Wait for status changes, reports, approval requests, low memory, and usage limits being hit or reset | `thread/read` | `claude agents --json` |
+| `wait_events` | Orchestrator | Wait for status changes, reports, approval requests, low memory, and usage limits being hit (with `pauseAtPct`) or reset | `thread/read` | `claude agents --json` |
 | `read_reports` | Orchestrator | Read reports | `reports.jsonl` | `reports.jsonl` |
 | `report` | Worker session | Report to the orchestrator | `reports.jsonl` | `reports.jsonl` |
 
@@ -301,6 +311,8 @@ Every call follows the official documentation (for Codex, `learn.chatgpt.com/doc
 - **Reports are exchanged only within the same machine**
 - **Built on experimental features** — Parts of the Codex app-server and Claude Code's agent view are experimental, and their behavior may change between versions
 - **Desktop app integration is unverified** — Whether worker sessions appear in the desktop apps' session lists has not been checked. While a session is running, don't continue it from a desktop app
+- **Whether Claude Code background sessions continue by themselves when the limit resets is unverified** — If they don't, the orchestrator asks them to carry on once it is back
+- **A new working folder must first be trusted on the PC (Claude Code)** — `claude --bg` cannot show the trust prompt. Trust is recorded per repository; trusting a parent folder does not cover the repositories under it. When you use the orchestrator remotely (Remote Control, a phone), use an already trusted repository as the working folder
 
 ## Verification
 
@@ -312,7 +324,7 @@ Because it has not yet been verified against real Claude Code or Codex, please s
 | # | Check | Steps | If it fails |
 | --- | --- | --- | --- |
 | C1 | Installation | In the chat box, open `/plugin` — does it appear on the Installed tab? Open `/mcp` — is the plugin's `session-manager` connected? | Check that `node --version` is 20 or later |
-| C2 | Tools and usage | Run `/inline-agent-orchestrator:manage-sessions` → allow the status line setup → wait a moment, then ask "call `get_usage`" → are usage (5h, weekly) and free memory shown? | Check `statusLine` in `~/.claude/settings.json` and `~/.claude/session-manager-mcp/usage.json` |
+| C2 | Tools and usage | Run `/inline-agent-orchestrator:manage-sessions` → ask "call `get_usage`" → is free memory shown, with `pauseAtPct` `null`? To try usage too, write `"pauseAtPct": { "claude": 95 }` in `config.json`, run it in a terminal and allow the status line setup → wait a moment and ask again → is usage (5h, weekly) shown? | Check `statusLine` in `~/.claude/settings.json` and `~/.claude/session-manager-mcp/usage.json` |
 | C3 | Starting a session | Start `claude` once in a test folder and trust it. Then ask: "`start_session` with the name 'trial', that folder as the working folder, and the request 'count the files and send the result with report'" → does 'trial' appear in `claude agents`? | Read the error message returned by the tool |
 | C4 | Receiving reports | Does `wait_events` receive the `report` (done)? With `claude attach <ID>` → `/mcp`, does the worker session show `session-report` while the orchestrator's tools are unavailable? | Check `~/.claude/session-manager-mcp/worker-mcp.json` |
 | C5 | Messaging a running session | While a longer request is running, `send_message` → `delivery: queued`; after it finishes, `wait_events` shows `queuedDelivered` and the work continues in the same session? | If it continues under a different ID, `copiedTo` is shown |
@@ -341,7 +353,7 @@ Cleanup: `codex archive <ID>`, `update_session` (remove), and `codex app-server 
 
 | Message | Fix |
 | --- | --- |
-| `Workspace not trusted` (Claude Code) | Start `claude` once in the working folder and trust it |
+| `Workspace not trusted` / "not trusted" (Claude Code) | In a terminal on the PC, start `claude` once in the working folder and accept the trust prompt. Trust is per repository; trusting a parent folder does not help |
 | `claude agents --json returned something that is not JSON` (Claude Code) | Update the CLI. Check agent view's status with `claude daemon status` |
 | `daemon start failed` (Codex) | On Windows, it cannot be started from an administrator PowerShell. It also fails if the `CODEX_HOME` path is too long |
 | `thread/queue/add を使えません` (Codex) | Update Codex |

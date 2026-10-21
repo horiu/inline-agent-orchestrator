@@ -3,9 +3,21 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, appendFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
-import { Store, stateDir, DEFAULT_CONFIG } from '../src/state.mjs';
+import { Store, stateDir, DEFAULT_CONFIG, pauseAtPctFor } from '../src/state.mjs';
 
 const fresh = () => new Store(mkdtempSync(join(tmpdir(), 'csm-state-')));
+
+test('pauseAtPct is off for Claude Code and 95 for Codex unless config.json says otherwise', () => {
+  const s = fresh();
+  const at = (agent) => pauseAtPctFor(s.config(), agent);
+  assert.deepEqual([at('claude'), at('codex')], [null, 95]);
+  writeFileSync(s.configPath, JSON.stringify({ pauseAtPct: { claude: 90 } }));
+  assert.deepEqual([at('claude'), at('codex')], [90, 95], 'the other agent keeps its default');
+  writeFileSync(s.configPath, JSON.stringify({ pauseAtPct: 80 }));
+  assert.deepEqual([at('claude'), at('codex')], [80, 80]);
+  writeFileSync(s.configPath, JSON.stringify({ pauseAtPct: null }));
+  assert.deepEqual([at('claude'), at('codex')], [null, null]);
+});
 
 test('Store anchors a relative directory and all file paths to the manager cwd', () => {
   const dir = mkdtempSync(join(tmpdir(), 'csm-relative-'));

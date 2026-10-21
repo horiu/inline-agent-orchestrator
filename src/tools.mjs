@@ -5,7 +5,7 @@
 import { freemem, totalmem } from 'node:os';
 import { codexBackend } from './backends/codex.mjs';
 import { ToolError } from './backends/common.mjs';
-import { DEFAULT_CONFIG, TARGET_STATUSES, WATCH_INTERVAL_MAX_MIN } from './state.mjs';
+import { DEFAULT_CONFIG, TARGET_STATUSES, WATCH_INTERVAL_MAX_MIN, pauseAtPctFor } from './state.mjs';
 
 export { ToolError };
 
@@ -82,9 +82,11 @@ export function createTools({ backend, client, store, sys = {} }) {
     }));
   }
 
-  // Load guard: number of running conversations, free memory, usage limits.
+  // Load guard: number of running conversations, free memory, and usage
+  // limits when pauseAtPct is set for this agent.
   async function guard() {
     const cfg = store.config();
+    const pauseAt = pauseAtPctFor(cfg, be.agent);
     const state = store.state();
     const live = await liveStatuses(watchedIds(state), state.targets);
     const running = Object.values(live).filter((s) => s.status === 'active').length;
@@ -95,13 +97,20 @@ export function createTools({ backend, client, store, sys = {} }) {
     let usage = null;
     try {
       usage = await be.usage();
-      for (const w of usage.windows) {
-        if (w.usedPercent >= cfg.pauseAtPct)
-          reasons.push(`利用枠 ${w.limitId}/${w.window} が ${w.usedPercent}%（止める目安 ${cfg.pauseAtPct}%・戻る ${w.resetsAt}）`);
+      if (pauseAt !== null) {
+        for (const w of usage.windows) {
+          if (w.usedPercent >= pauseAt)
+            reasons.push(`利用枠 ${w.limitId}/${w.window} が ${w.usedPercent}%（止める目安 ${pauseAt}%・戻る ${w.resetsAt}）`);
+        }
+        if (usage.ordinaryUsageAllowed === false) reasons.push('利用枠を使い切っています（ordinaryUsageAllowed=false）');
       }
-      if (usage.ordinaryUsageAllowed === false) reasons.push('利用枠を使い切っています（ordinaryUsageAllowed=false）');
     } catch (err) {
-      usage = { error: err.message };
+      // Without pauseAtPct the usage is only for information, so the
+      // manager is not asked to set anything up to read it.
+      usage =
+        pauseAt === null
+          ? { unavailable: true, note: '利用枠は読めないが、利用枠では止めない設定（pauseAtPct なし）なので、このままでよい' }
+          : { error: err.message };
     }
     return {
       canStartNew: reasons.length === 0,
@@ -111,7 +120,7 @@ export function createTools({ backend, client, store, sys = {} }) {
       freeMemGb: Number(freeGb.toFixed(2)),
       totalMemGb: Number((mem.total() / GB).toFixed(2)),
       minFreeMemGb: cfg.minFreeMemGb,
-      pauseAtPct: cfg.pauseAtPct,
+      pauseAtPct: pauseAt,
       usage,
       live,
     };
@@ -154,7 +163,7 @@ export function createTools({ backend, client, store, sys = {} }) {
 
     read_session: {
       description:
-        '会話の最近のやりとりを読む（依頼の文・AI の返事・状態・エラー・利用者への質問）。落ちたのか、判断待ちなのか、終わったのかを見分けるのに使う。長い文は末尾を残して切る。Codex はターンごと、Claude Code は最近の出力（claude logs）。',
+        '会話の最近のやりとりを読む（依頼の文・AI の返事・状態・エラー・利用者への質問）。落ちたのか、判断待ちなのか、終わったのかを見分けるのに使う。長い文は末尾を残して切る。Codex はターンごと、Claude Code は最近の出力（claude logs）。利用制限で止まったらしいときは usageLimit に当たった行を返す（Codex はターンの error を見る）。',
       readOnly: true,
       inputSchema: {
         type: 'object',
@@ -172,7 +181,7 @@ export function createTools({ backend, client, store, sys = {} }) {
 
     start_session: {
       description:
-        '新しい作業の会話を起こして、最初の依頼を送る（名前・作業フォルダ・モデル・エフォート）。モデルとエフォートは、仕事の種類に合う profile（get_usage の profiles）で選ぶのが基本。model・effort を書くと profile より優先する。会話はこの会話とは別に動き、この会話が終わっても動き続ける。動いている数・空きメモリ・利用枠の上限を超えるときは起こさずに理由を返す（force=true で無視）。名前は管理中の会話と重ねない。',
+        '新しい作業の会話を起こして、最初の依頼を送る（名前・作業フォルダ・モデル・エフォート）。モデルとエフォートは、仕事の種類に合う profile（get_usage の profiles）で選ぶのが基本。model・effort を書くと profile より優先する。会話はこの会話とは別に動き、この会話が終わっても動き続ける。動いている数・空きメモリ・利用枠（pauseAtPct があるとき）の上限を超えるときは起こさずに理由を返す（force=true で無視）。名前は管理中の会話と重ねない。',
       inputSchema: {
         type: 'object',
         required: ['name', 'cwd', 'prompt'],
@@ -345,7 +354,7 @@ export function createTools({ backend, client, store, sys = {} }) {
 
     get_usage: {
       description:
-        '利用枠（窓ごとの使用率とリセットの時刻）・空きメモリ・動いている会話の数と、いま新しく動かしてよいか（canStartNew と理由）を返す。profiles は仕事の種類ごとのおすすめのモデルとエフォート（null は、start_session ではそれぞれの既定、send_message では今の値のまま）。',
+        '利用枠（窓ごとの使用率とリセットの時刻）・空きメモリ・動いている会話の数と、いま新しく動かしてよいか（canStartNew と理由）を返す。pauseAtPct が null なら利用枠では止めない（読めなくてもよい）。profiles は仕事の種類ごとのおすすめのモデルとエフォート（null は、start_session ではそれぞれの既定、send_message では今の値のまま）。',
       readOnly: true,
       inputSchema: { type: 'object', properties: {} },
       async handler() {
@@ -383,7 +392,7 @@ export function createTools({ backend, client, store, sys = {} }) {
 
     wait_events: {
       description:
-        '見回り。管理中の会話の状態の変化・作業の会話からの報告・承認や入力の待ち・空きメモリ不足・利用枠の超過と回復を、起きるまで待って返す。何も起きなければ最長 intervalMin 分（省略時は設定の watchIntervalMin。設定より長くはできない）で timedOut を返す。待つ間はモデルを使わない。動いている会話・枠で止めた会話・未読の報告がどれも無ければすぐ idle=true を返す（見回りを止めてよい合図）。同時に呼べるのは1つだけ（新しい呼び出しが前のものを打ち切る）。',
+        '見回り。管理中の会話の状態の変化・作業の会話からの報告・承認や入力の待ち・空きメモリ不足・利用枠の超過（pauseAtPct があるとき）と回復を、起きるまで待って返す。何も起きなければ最長 intervalMin 分（省略時は設定の watchIntervalMin。設定より長くはできない）で timedOut を返す。待つ間はモデルを使わない。動いている会話・枠で止めた会話・未読の報告がどれも無ければすぐ idle=true を返す（見回りを止めてよい合図）。同時に呼べるのは1つだけ（新しい呼び出しが前のものを打ち切る）。',
       // Marked read-only for approval prompts: it changes no conversation's
       // content, only the manager's own read mark and last-seen statuses (and,
       // for Claude Code, it delivers messages the manager already queued).
@@ -401,6 +410,7 @@ export function createTools({ backend, client, store, sys = {} }) {
         const stale = () => myGen !== waitGen || Boolean(signal?.aborted);
         const aborted = signal ? new Promise((r) => signal.addEventListener('abort', r, { once: true })) : null;
         const cfg = store.config();
+        const pauseAt = pauseAtPctFor(cfg, be.agent);
         const maxMin = Math.min(Math.max(Number(cfg.watchIntervalMin) || DEFAULT_CONFIG.watchIntervalMin, 0), WATCH_INTERVAL_MAX_MIN);
         const limitMin = intervalMin > 0 ? Math.min(intervalMin, maxMin) : maxMin;
         const deadline = now() + limitMin * 60_000;
@@ -500,10 +510,10 @@ export function createTools({ backend, client, store, sys = {} }) {
               usageChecked = true;
               try {
                 const u = await be.usage();
-                const over = u.windows.filter((w) => w.usedPercent >= cfg.pauseAtPct);
+                const over = pauseAt === null ? [] : u.windows.filter((w) => w.usedPercent >= pauseAt);
                 const keys = over.map((w) => `${w.limitId}/${w.window}/${w.resetsAt}`);
                 const fresh = over.filter((_, i) => !alerts.usageHigh.includes(keys[i]));
-                if (fresh.length) events.push({ type: 'usageHigh', windows: fresh, pauseAtPct: cfg.pauseAtPct });
+                if (fresh.length) events.push({ type: 'usageHigh', windows: fresh, pauseAtPct: pauseAt });
                 alerts.usageHigh = keys;
                 // Once per set of paused threads, not on every call.
                 const recoveredKey = paused.slice().sort().join(',');

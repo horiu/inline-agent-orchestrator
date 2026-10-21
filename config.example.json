@@ -7,7 +7,10 @@
   },
   "maxRunning": 3,
   "minFreeMemGb": 2,
-  "pauseAtPct": 95,
+  "pauseAtPct": {
+    "claude": null,
+    "codex": 95
+  },
   "defaults": {
     "sandbox": "workspace-write",
     "approvalPolicy": "never",

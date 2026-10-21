@@ -57,7 +57,7 @@ class FakeClaude {
       Object.assign(s, { state: 'working', status: 'busy', waitingFor: undefined });
       return { code: 0, stdout: `Resumed ${s.id}\n`, stderr: '' };
     }
-    if (args[0] === 'logs') return { code: 0, stdout: 'x'.repeat(50) + 'END OF LOG', stderr: '' };
+    if (args[0] === 'logs') return { code: 0, stdout: this.log ?? 'x'.repeat(50) + 'END OF LOG', stderr: '' };
     if (args[0] === 'stop') {
       const s = this.sessions.find((x) => x.id === args[1]);
       Object.assign(s, { state: 'stopped', status: undefined });
@@ -297,10 +297,28 @@ test('list_sessions all uses agents --json with --all and --cwd', async () => {
   assert.equal(r.sessions[0].managed.status, 'running');
 });
 
-test('usage comes from usage.json written by the status line; stale data is flagged', async () => {
+test('by default usage never stops Claude Code sessions, and no status line is asked for', async () => {
   let u = await tools.get_usage.handler({});
+  assert.equal(u.pauseAtPct, null);
+  assert.equal(u.usage.unavailable, true);
+  assert.equal(u.usage.error, undefined);
+  assert.doesNotMatch(u.usage.note, /statusline/);
+  recordUsage({ rate_limits: { five_hour: { used_percentage: 99, resets_at: 1_800_000_100 } } }, store.dir, new Date(clock));
+  u = await tools.get_usage.handler({});
+  assert.equal(u.usage.windows[0].usedPercent, 99, 'still shown when recorded');
+  assert.equal(u.canStartNew, true);
+  await tools.start_session.handler({ name: 'a', cwd: '/r', prompt: 'p' });
+  const r = await tools.wait_events.handler({ intervalMin: 1 / 60 });
+  assert.equal(r.events.some((e) => e.type === 'usageHigh'), false);
+});
+
+test('usage comes from usage.json written by the status line; stale data is flagged', async () => {
+  setup({ pauseAtPct: { claude: 95 } });
+  let u = await tools.get_usage.handler({});
+  assert.equal(u.pauseAtPct, 95);
   assert.match(u.usage.error, /status line/);
   assert.match(u.usage.error, /setup.mjs" statusline/);
+  assert.match(u.usage.error, /デスクトップ app では描かれず/);
   assert.ok(recordUsage({ rate_limits: { five_hour: { used_percentage: 96.4, resets_at: 1_800_000_100 }, seven_day: { used_percentage: 41.2, resets_at: 1_800_500_000 } } }, store.dir, new Date(clock)));
   u = await tools.get_usage.handler({});
   assert.deepEqual(u.usage.windows.map((w) => [w.window, w.usedPercent]), [['5h', 96.4], ['weekly', 41.2]]);
@@ -312,6 +330,39 @@ test('usage comes from usage.json written by the status line; stale data is flag
   assert.equal(later.usage.stale, true);
   assert.deepEqual(later.usage.windows.map((w) => w.window), ['weekly'], 'a window past its reset time is dropped');
   assert.equal(later.canStartNew, true);
+});
+
+test('read_session points at a usage limit near the end of the log', async () => {
+  await tools.start_session.handler({ name: 'a', cwd: '/r', prompt: 'p' });
+  fake.log = '作業中…\n⎿ 5-hour limit reached ∙ resets 5pm (Asia/Tokyo)\n';
+  let r = await tools.read_session.handler({ threadId: SID });
+  assert.equal(r.usageLimit, '⎿ 5-hour limit reached ∙ resets 5pm (Asia/Tokyo)');
+  fake.log = 'Usage limit reached\n' + 'y'.repeat(3000) + '\n続きを進めました';
+  r = await tools.read_session.handler({ threadId: SID });
+  assert.equal(r.usageLimit, null, 'an old line far back does not count');
+});
+
+test('a session waiting for the usage limit is not reported as waiting for the user', async () => {
+  await tools.start_session.handler({ name: 'a', cwd: '/r', prompt: 'p' });
+  fake.set(SID, { state: 'blocked', waitingFor: 'usage limit' });
+  clock += 10_000;
+  const [s] = (await tools.list_sessions.handler({})).sessions;
+  assert.deepEqual(s.activeFlags, ['waitingOnUsageLimit']);
+  fake.set(SID, { state: 'blocked', waitingFor: 'something new' });
+  clock += 10_000;
+  assert.deepEqual((await tools.list_sessions.handler({})).sessions[0].activeFlags, ['waitingOnUserInput']);
+});
+
+test('an untrusted folder is explained instead of the raw CLI error', async () => {
+  fake.failNext = 'Workspace not trusted. Run `claude` in /new once and accept the trust prompt, then retry.';
+  await assert.rejects(tools.start_session.handler({ name: 'a', cwd: '/new', prompt: 'p' }), (err) => {
+    assert.ok(err instanceof ToolError);
+    assert.match(err.message, /\/new が Claude Code に信頼されていない/);
+    assert.match(err.message, /リポジトリごと/);
+    assert.match(err.message, /リモート/);
+    return true;
+  });
+  assert.deepEqual(store.state().targets, {}, 'nothing recorded');
 });
 
 test('status line: nothing recorded without rate_limits; short text', () => {
