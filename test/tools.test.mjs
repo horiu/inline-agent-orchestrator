@@ -918,3 +918,18 @@ test('the stuck limit is kept even when pollSec is longer', async () => {
   assert.equal(r.stuck, true);
   assert.equal(clock, 3000);
 });
+
+test('a usage-paused session whose recovery was reported no longer holds off the stuck stop', async () => {
+  setup({ stopWhenStuckMin: 3 / 60 });
+  fake.addThread('q', { status: { type: 'idle' } });
+  fake.addThread('u', { status: { type: 'idle' } });
+  store.updateTarget('q', { name: 'Q', status: 'waiting_user', lastSeen: { status: 'idle', activeFlags: [] } });
+  store.updateTarget('u', { name: 'U', status: 'paused_usage', lastSeen: { status: 'idle', activeFlags: [] } });
+  fake.rateLimits.rateLimits.primary.usedPercent = 99;
+  assert.deepEqual((await tools.wait_events.handler({})).events.map((e) => e.type), ['usageHigh']);
+  assert.equal((await tools.wait_events.handler({})).timedOut, true, 'still waiting for the limit');
+  fake.rateLimits.rateLimits.primary.usedPercent = 3;
+  assert.deepEqual((await tools.wait_events.handler({})).events.map((e) => e.type), ['usageRecovered']);
+  const r = await tools.wait_events.handler({});
+  assert.equal(r.stuck, true);
+});
