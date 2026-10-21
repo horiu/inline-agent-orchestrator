@@ -27,6 +27,17 @@ function workerConfig(reportDir) {
   };
 }
 
+function isCodexWorker(target) {
+  if (!target) return false;
+  if (Object.hasOwn(target, 'codexWorker')) return target.codexWorker === true;
+  // Before codexWorker existed, start_session recorded cwd and startedAt.
+  // The documented update_session fields do not include this creation metadata.
+  // Claude-created records have jobId/sessionId and must not be migrated here.
+  return typeof target.cwd === 'string' && target.cwd.length > 0 &&
+    typeof target.startedAt === 'string' && target.startedAt.length > 0 &&
+    !Object.hasOwn(target, 'jobId') && !Object.hasOwn(target, 'sessionId');
+}
+
 function summarize(t, target) {
   return {
     threadId: t.id,
@@ -65,6 +76,18 @@ export function codexBackend({ client, store }) {
       const res = await client.request('thread/read', { threadId, includeTurns: true });
       const turns = res.thread?.turns ?? [];
       return turns[turns.length - 1] ?? null;
+    }
+  }
+
+  async function verifyReporting(threadId) {
+    const params = { threadId, detail: 'toolsAndAuthOnly' };
+    const reporter = await client.request('mcpServerStatus/list', { ...params, serverName: 'session-report' });
+    if (!reporter.data?.some(server => server.name === 'session-report' && Object.keys(server.tools ?? {}).length === 1 && Object.hasOwn(server.tools, 'report'))) {
+      throw new ToolError('報告接続 session-report の適用を確認できませんでした。新しい作業は送信していません。このセッションの接続を閉じ、解放されてから再試行してください');
+    }
+    const manager = await client.request('mcpServerStatus/list', { ...params, serverName: 'session-manager' });
+    if (manager.data?.some(server => server.name === 'session-manager' && Object.keys(server.tools ?? {}).length > 0)) {
+      throw new ToolError('この作業セッションには管理ツールが残っているため、新しい作業を送信できません。接続を閉じ、解放されてから再試行してください');
     }
   }
 
@@ -138,7 +161,7 @@ export function codexBackend({ client, store }) {
       if (model) params.model = model;
       const started = await client.request('thread/start', params);
       const threadId = started.thread.id;
-      onCreated(threadId, { codexWorker: true });
+      onCreated(threadId, { codexWorker: true, codexReportHome: store.dir });
       let nameError = null;
       try {
         await client.request('thread/name/set', { threadId, name });
@@ -154,12 +177,23 @@ export function codexBackend({ client, store }) {
     // change: { model?, effort? } for this turn and the turns after it
     // (turn/start overrides "for this turn and subsequent turns").
     async send(id, message, mode, target, change = {}) {
+      let migrated = false;
       const status = (await readThread(id)).status?.type;
       const how = mode === 'auto' ? (status === 'active' ? 'queue' : 'start') : mode;
       if (how !== 'start' && (change.model || change.effort))
         throw new ToolError(
           '動いている会話のモデル・エフォートは変えられません。今のターンが終わってから送るか、stop_session で止めてから送ってください',
         );
+      const worker = isCodexWorker(target);
+      const needsReportingUpdate = worker && (target.codexWorker !== true || target.codexReportHome !== store.dir);
+      if (worker && status !== 'notLoaded') {
+        if (needsReportingUpdate) {
+          throw new ToolError('この作業セッションは共有デーモンに読み込まれているため、報告接続を更新できません。このセッションを開いている端末や監視プロセスを閉じ、解放されてから再試行してください');
+        }
+        // A CLI/TUI may have reloaded this thread without the saved overrides.
+        // Persisted ownership and mailbox metadata do not prove live isolation.
+        await verifyReporting(id);
+      }
       if (how === 'queue') {
         try {
           const res = await client.request('thread/queue/add', { threadId: id, input: textInput(message), clientUserMessageId: randomUUID() });
@@ -182,9 +216,15 @@ export function codexBackend({ client, store }) {
         const resume = { threadId: id, excludeTurns: true };
         // Config overrides are not persisted in the rollout. Reapply them
         // when the manager resumes one of its workers, including after restart.
-        if (target?.codexWorker) resume.config = workerConfig(store.dir);
+        if (worker && status === 'notLoaded') resume.config = workerConfig(store.dir);
         await client.request('thread/resume', resume);
+        if (worker && status === 'notLoaded') await verifyReporting(id);
+        if (needsReportingUpdate) {
+          store.updateTarget(id, { codexWorker: true, codexReportHome: store.dir });
+          migrated = target.codexWorker !== true;
+        }
       }
+      if (migrated) message = `【報告接続の更新】報告には session-report サーバーの report ツールを使ってください。session-manager はこの作業セッションでは無効です。以前の報告先への呼び出しは使わないでください。\n\n${message}`;
       const params = { threadId: id, input: textInput(message) };
       if (change.model) params.model = change.model;
       if (change.effort) params.effort = change.effort;

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createInterface } from 'node:readline';
 import { createMcpServer } from '../src/server.mjs';
@@ -94,10 +94,12 @@ test('the real entry point lists all tools over stdio without touching Codex', a
   assert.equal(rep.result.structuredContent.ok, true);
 });
 
-test('a report-only worker advertises a writing tool and writes to the selected mailbox', async () => {
+test('a report-only worker writes to a relative manager mailbox from another cwd', async () => {
   const home = mkdtempSync(join(tmpdir(), 'csm-worker-'));
+  const manager = new Store(relative(process.cwd(), home));
   const child = spawn(process.execPath, [fileURLToPath(new URL('../src/server.mjs', import.meta.url))], {
-    env: { ...process.env, CSM_AGENT: 'codex', CSM_ROLE: 'worker', CSM_HOME: home },
+    env: { ...process.env, CSM_AGENT: 'codex', CSM_ROLE: 'worker', CSM_HOME: manager.dir },
+    cwd: mkdtempSync(join(tmpdir(), 'csm-worker-cwd-')),
     stdio: ['pipe', 'pipe', 'pipe'],
   });
   const lines = createInterface({ input: child.stdout });
@@ -114,7 +116,7 @@ test('a report-only worker advertises a writing tool and writes to the selected 
     assert.equal(denied.result.isError, true);
     const done = await call(4, 'tools/call', { name: 'report', arguments: { kind: 'done', text: 'worker done' } });
     assert.equal(done.result.structuredContent.ok, true);
-    assert.deepEqual(new Store(home).peekReports().reports.map(r => [r.kind, r.text]), [['done', 'worker done']]);
+    assert.deepEqual(manager.peekReports().reports.map(r => [r.kind, r.text]), [['done', 'worker done']]);
   } finally {
     const closed = new Promise(resolve => child.once('exit', resolve));
     child.stdin.end();

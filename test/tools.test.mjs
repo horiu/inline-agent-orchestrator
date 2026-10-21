@@ -2,7 +2,7 @@ import { test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { AppServerClient } from '../src/appserver.mjs';
 import { Store } from '../src/state.mjs';
@@ -57,6 +57,7 @@ test('start_session: thread/start, name, first turn with id; recorded in state',
 
   const target = store.state().targets.thr_1;
   assert.equal(target.codexWorker, true);
+  assert.equal(target.codexReportHome, store.dir);
   assert.equal(target.status, 'running');
   assert.equal(target.area, 'src/ui');
   assert.equal(target.effort, 'high');
@@ -95,6 +96,104 @@ test('Codex workers can report with approvalPolicy=never without granting manage
   store.updateTarget('manual', { name: 'manually tracked', status: 'running' });
   await tools.send_message.handler({ threadId: 'manual', message: 'continue' });
   assert.deepEqual(calls('thread/resume')[1].params, { threadId: 'manual', excludeTurns: true });
+});
+
+test('pre-upgrade Codex workers regain reporting on resume and keep their identity', async () => {
+  const started = await tools.start_session.handler({ name: 'old worker', cwd: '/repo', prompt: 'work' });
+  const state = store.state();
+  delete state.targets[started.threadId].codexWorker;
+  delete state.targets[started.threadId].codexReportHome;
+  store.saveState(state);
+  fake.reportServers.delete(started.threadId);
+  fake.threads.get(started.threadId).status = { type: 'notLoaded' };
+
+  const resumed = await tools.send_message.handler({ threadId: started.threadId, message: 'continue after upgrade' });
+  assert.equal(resumed.threadId, started.threadId);
+  assert.equal(resumed.delivery, 'started');
+  const config = calls('thread/resume')[0].params.config;
+  assert.deepEqual(config, calls('thread/start')[0].params.config);
+  assert.equal(store.state().targets[started.threadId].codexWorker, true);
+  assert.equal(store.state().targets[started.threadId].codexReportHome, store.dir);
+  const input = calls('turn/start')[1].params.input[0].text;
+  assert.match(input, /session-report/);
+  assert.match(input, /continue after upgrade$/);
+  fake.threads.get(started.threadId).status = { type: 'idle' };
+  await tools.send_message.handler({ threadId: started.threadId, message: 'normal follow-up' });
+  assert.equal(calls('turn/start')[2].params.input[0].text, 'normal follow-up');
+});
+
+test('loaded legacy workers are not falsely migrated or sent a new turn', async () => {
+  fake.addThread('loaded', { status: { type: 'idle' } });
+  store.updateTarget('loaded', { name: 'legacy', status: 'running', cwd: '/repo', startedAt: '2026-01-01T00:00:00Z' });
+  await assert.rejects(tools.send_message.handler({ threadId: 'loaded', message: 'continue' }), /読み込まれている/);
+  assert.equal(calls('thread/resume').length, 0);
+  assert.equal(calls('turn/start').length, 0);
+  assert.equal(store.state().targets.loaded.codexWorker, undefined);
+});
+
+test('ignored resume config does not mark migration complete or start work', async () => {
+  fake.addThread('ignored', { status: { type: 'notLoaded' } });
+  store.updateTarget('ignored', { name: 'legacy', status: 'running', cwd: '/repo', startedAt: '2026-01-01T00:00:00Z' });
+  fake.ignoreResumeConfig = true;
+  await assert.rejects(tools.send_message.handler({ threadId: 'ignored', message: 'continue' }), /適用を確認できません/);
+  assert.equal(calls('turn/start').length, 0);
+  assert.equal(store.state().targets.ignored.codexWorker, undefined);
+});
+
+test('loaded current workers continue only with the recorded report mailbox', async () => {
+  const started = await tools.start_session.handler({ name: 'current', cwd: '/repo', prompt: 'work' });
+  fake.threads.get(started.threadId).status = { type: 'idle' };
+  await tools.send_message.handler({ threadId: started.threadId, message: 'continue' });
+  assert.equal(calls('thread/resume')[0].params.config, undefined);
+  fake.threads.get(started.threadId).status = { type: 'idle' };
+  store.updateTarget(started.threadId, { codexReportHome: '/another-manager' });
+  await assert.rejects(tools.send_message.handler({ threadId: started.threadId, message: 'continue' }), /読み込まれている/);
+  assert.equal(calls('turn/start').length, 2);
+});
+
+test('loaded current workers cannot start or queue work after losing reporting overrides', async () => {
+  for (const status of ['idle', 'active']) {
+    fake.addThread(status, { status: { type: status } });
+    store.updateTarget(status, { name: status, status: 'running', codexWorker: true, codexReportHome: store.dir });
+    await assert.rejects(tools.send_message.handler({ threadId: status, message: 'must not proceed' }), /適用を確認できません/);
+  }
+  assert.equal(calls('turn/start').length, 0);
+  assert.equal(calls('thread/queue/add').length, 0);
+});
+
+test('a loaded reporter does not authorize work if manager tools are exposed', async () => {
+  const started = await tools.start_session.handler({ name: 'current', cwd: '/repo', prompt: 'work' });
+  fake.threads.get(started.threadId).status = { type: 'idle' };
+  fake.managerServers.add(started.threadId);
+  await assert.rejects(tools.send_message.handler({ threadId: started.threadId, message: 'must not proceed' }), /管理ツールが残っている/);
+  assert.equal(calls('turn/start').length, 1);
+});
+
+test('legacy detection excludes manual, partial, Claude and explicitly opted-out records', async () => {
+  const records = [
+    { name: 'manual', status: 'running' },
+    { name: 'partial', status: 'running', cwd: '/repo' },
+    { name: 'Claude', status: 'running', cwd: '/repo', startedAt: '2026-01-01T00:00:00Z', jobId: 'job', sessionId: 'session' },
+    { name: 'opted out', status: 'running', cwd: '/repo', startedAt: '2026-01-01T00:00:00Z', codexWorker: false },
+  ];
+  for (const [i, record] of records.entries()) {
+    const id = `existing_${i}`;
+    fake.addThread(id, { status: { type: 'notLoaded' } });
+    store.updateTarget(id, record);
+    await tools.send_message.handler({ threadId: id, message: 'continue' });
+    assert.deepEqual(calls('thread/resume')[i].params, { threadId: id, excludeTurns: true });
+    assert.notEqual(store.state().targets[id].codexWorker, true);
+  }
+});
+
+test('relative manager data directories are absolute in the worker environment', async () => {
+  const relativeStore = new Store(relative(process.cwd(), store.dir));
+  const client = new AppServerClient({ connector: fake.connector() });
+  const { tools: relativeTools } = createTools({ client, store: relativeStore, sys: { freemem: () => 8 * GB } });
+  await relativeTools.start_session.handler({ name: 'relative mailbox', cwd: '/different-repo', prompt: 'report' });
+  const home = calls('thread/start')[0].params.config['mcp_servers.session-report'].env.CSM_HOME;
+  assert.equal(isAbsolute(home), true);
+  assert.equal(home, store.dir);
 });
 
 test('start_session refuses when the running limit is reached, unless force', async () => {
