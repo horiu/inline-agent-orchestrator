@@ -295,7 +295,8 @@ Claude Code にも Codex にも、AI が別のセッションを操作するた�
 
 - MCP サーバーはアプリのツールを呼べないため、デスクトップアプリでは `start_session` がアプリに渡す値を返し、オーケストレーターがアプリの `start_session` で起動して、`update_session` で記録します。状態は `claude agents --json` の会話の行（busy・idle）で見ます。アプリの会話の ID（`local_…`）と Claude Code のセッション ID は別のため、最初は題名で探し、作業セッションの `report` が送るセッション ID で結び付けます
 
-- 作業セッションからの報告は、報告専用の `session-report` 接続の `report` ツールがファイルに書き込み、オーケストレーターが読み取ります。Claude Code・Codex ともに、この接続では `report` だけを公開し、作業セッションの `session-manager` は無効にしています。ただし、デスクトップアプリの作業セッションには起動時に接続を足せないため、プラグインの `session-manager` の `report` を使います（ほかのツールは使わないよう依頼に書きます）
+- 作業セッションからの報告は、報告専用の `session-report` 接続の `report` ツールがファイルに書き込み、オーケストレーターが読み取ります。Claude Code・Codex ともに、この接続では `report` だけを公開し、作業セッションの `session-manager` は無効にしています。ただし、デスクトップアプリの作業セッションには起動時に接続を足せないため、プラグインの `session-manager` の `report` を使います（ほかのツールは使わないよう依頼に書きます）。アプリの会話には起動時に許可するツールを渡せないため、プラグインのフック（`hooks/hooks.json`、PreToolUse）がこの `report` だけを確認なしで許可します（報告用のファイルに追記するだけのツールです）
+- 空きメモリや CPU が足りずに起動を待たせた作業があるあいだは、監視を続けて資源を見回り、余裕ができるとオーケストレーターに知らせて起動させます
 - Claude Code の使用量は CLI からは取得できず、status line に渡される値が唯一の公式な取得手段です。そのため `pauseAtPct` を使う場合は status line を設定します。元の status line は保存しておき、その表示を引き続き出力します。デスクトップアプリは status line を表示しないため、使用量は記録されません
 - Claude Code の作業セッションが利用制限で止まったかは、`claude logs` の末尾にある「Usage limit reached」などの文面から推定します（`read_session` の `usageLimit`）。文面は公開された仕様ではないため、変わると見分けられなくなります
 - Claude Code の作業セッションは、編集の前に `.claude/worktrees/` に worktree を作成し、その中で作業します（agent view の既定の動作）
@@ -312,8 +313,8 @@ Claude Code にも Codex にも、AI が別のセッションを操作するた�
 | `stop_session` | オーケストレーター | 実行中のターンを停止する | `turn/interrupt` | `claude stop` |
 | `set_session_name` | オーケストレーター | 名前を変更する | `thread/name/set` | 記録のみ |
 | `get_usage` | オーケストレーター | 使用量・空きメモリ・CPU・実行数、新しく起動できるかどうか（`pauseAtPct` があるときは使用量も見る）、起動のしかた（`launcher`）、プロファイルの一覧 | `account/rateLimits/read` | `usage.json` |
-| `update_session` | オーケストレーター | 記録（状態・メモ・保留）を更新する | `state.json` | `state.json` |
-| `wait_events` | オーケストレーター | 状態の変化・報告・承認待ち・メモリ不足・使用量の超過（`pauseAtPct` があるとき）と回復を待つ | `thread/read` | `claude agents --json` |
+| `update_session` | オーケストレーター | 記録（状態・メモ・保留・資源待ち・アプリの会話の追加）を更新する | `state.json` | `state.json` |
+| `wait_events` | オーケストレーター | 状態の変化・報告・承認待ち・メモリ不足・使用量の超過（`pauseAtPct` があるとき）と回復・資源待ちの作業を起動できる余裕を待つ | `thread/read` | `claude agents --json` |
 | `read_reports` | オーケストレーター | 報告を読む | `reports.jsonl` | `reports.jsonl` |
 | `report` | 作業セッション | オーケストレーターへ報告する | `reports.jsonl` | `reports.jsonl` |
 
@@ -417,6 +418,7 @@ npm test
 | `src/tools.mjs` | ツール、上限の判定、監視 |
 | `src/backends/` | Codex（app-server）と Claude Code（CLI）それぞれの実装 |
 | `src/setup.mjs` | セットアップスクリプト（Codex への登録とスキルのインストール、Claude Code の status line の設定） |
+| `src/allow-report.mjs` / `hooks/hooks.json` | デスクトップアプリの作業セッションの `report` を確認なしで許可するフック |
 | `src/claude-statusline.mjs` | Claude Code の使用量を記録する status line |
 | `src/appserver.mjs` / `src/ws.mjs` | Codex app-server のクライアント（Windows の Node.js は Unix ドメインソケットを扱えないため、`codex app-server proxy` 経由の WebSocket で通信） |
 | `skills/manage-sessions/` | オーケストレーターの手順（スキル） |

@@ -572,3 +572,22 @@ test('read_reports: unread once, then all newest first', async () => {
   assert.deepEqual((await tools.read_reports.handler({})).reports, []);
   assert.deepEqual((await tools.read_reports.handler({ all: true, limit: 1 })).reports.map((r) => r.text), ['2']);
 });
+
+test('work waiting for memory or CPU keeps the watch going and is reported once there is room', async () => {
+  // Each pair of samples gives `busy` % of one CPU.
+  let busy = 95;
+  let n = 0;
+  const cpus = () => [{ times: n++ % 2 === 0 ? { user: 0, nice: 0, sys: 0, idle: 0, irq: 0 } : { user: busy, nice: 0, sys: 0, idle: 100 - busy, irq: 0 } }];
+  const client = new AppServerClient({ connector: fake.connector() });
+  const t = createTools({ client, store, sys: { freemem: () => 8 * GB, now: () => clock, sleep: async (ms) => (clock += ms), cpus } }).tools;
+  store.updateTarget('wait:後で', { name: '後で', status: 'pending' });
+  assert.equal((await t.wait_events.handler({})).idle, true, 'work put off by the user does not keep the watch going');
+  await t.update_session.handler({ threadId: 'wait:次', name: '次', status: 'pending', waitForRoom: true, note: '依頼の要点' });
+  const busyRound = await t.wait_events.handler({});
+  assert.equal(busyRound.idle, false);
+  assert.equal(busyRound.timedOut, true);
+  busy = 20;
+  const r = await t.wait_events.handler({});
+  assert.deepEqual(r.events.map((e) => [e.type, e.names, e.cpuPct]), [['roomAvailable', ['次'], 20]]);
+  assert.equal((await t.wait_events.handler({})).timedOut, true, 'reported once');
+});

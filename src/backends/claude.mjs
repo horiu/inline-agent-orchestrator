@@ -184,14 +184,14 @@ export function claudeBackend({ store, claudePath = 'claude', permissionMode = '
     if (hit || target?.via !== 'app') return hit;
     // Until its first report gives the session ID, an app session is found
     // by its title (the name it was started with), started after the record.
-    // The ID is kept only when one session matches: another session of the
-    // same title must not take the record over.
+    // The match is not kept: a terminal or VS Code session of the same title
+    // is an interactive row too and must not take the record over.
     const since = Date.parse(target.startedAt ?? '') - 60_000;
-    const byName = list
-      .filter((e) => e.kind === 'interactive' && e.name === target.name && !(e.startedAt < since))
-      .sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0));
-    if (byName.length === 1 && byName[0].sessionId) store.updateTarget(id, { sessionId: byName[0].sessionId });
-    return byName[0] ?? null;
+    return (
+      list
+        .filter((e) => e.kind === 'interactive' && e.name === target.name && !(e.startedAt < since))
+        .sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0))[0] ?? null
+    );
   }
 
   // A just-started app session that is not listed yet counts as working.

@@ -297,7 +297,8 @@ Neither Claude Code nor Codex ships a tool that lets the AI operate other sessio
 | How usage is read | From app-server | Not read | From `usage.json`, written by the status line |
 
 - The MCP server cannot call the app's tools, so in the desktop app `start_session` returns the values to pass to the app; the orchestrator starts the session with the app's `start_session` and records it with `update_session`. Status comes from the session's row in `claude agents --json` (busy, idle). The app's session ID (`local_…`) differs from the Claude Code session ID, so the row is first found by title and then linked by the session ID that the worker's `report` carries
-- Reports are written to a file by the `report` tool on the dedicated `session-report` connection and read by the orchestrator. In both Claude Code and Codex, this connection exposes only `report`, and the worker's `session-manager` is disabled. Desktop app worker sessions cannot be given a connection at start, so they use `report` from the plugin's `session-manager` (their request tells them not to use its other tools)
+- Reports are written to a file by the `report` tool on the dedicated `session-report` connection and read by the orchestrator. In both Claude Code and Codex, this connection exposes only `report`, and the worker's `session-manager` is disabled. Desktop app worker sessions cannot be given a connection at start, so they use `report` from the plugin's `session-manager` (their request tells them not to use its other tools). App sessions cannot be given allowed tools at start, so a plugin hook (`hooks/hooks.json`, PreToolUse) allows this `report` alone without a prompt (it only appends to the report file)
+- While a task is held back for lack of free memory or CPU, the watch keeps going and checks the resources, then tells the orchestrator to start it once there is room
 - Claude Code usage cannot be read from the CLI; the values passed to the status line are the only official source. That is why a status line is set up when you use `pauseAtPct`. Your previous status line is saved and its output keeps being shown. The desktop app shows no status line, so no usage is recorded there
 - Whether a Claude Code worker session was stopped by a usage limit is inferred from wording such as "Usage limit reached" near the end of `claude logs` (`usageLimit` in `read_session`). The wording is not a published interface, so a change to it would go unnoticed
 - Claude Code worker sessions create a worktree under `.claude/worktrees/` before editing and work inside it (the default behavior of agent view)
@@ -314,8 +315,8 @@ Neither Claude Code nor Codex ships a tool that lets the AI operate other sessio
 | `stop_session` | Orchestrator | Stop the running turn | `turn/interrupt` | `claude stop` |
 | `set_session_name` | Orchestrator | Rename a session | `thread/name/set` | Record only |
 | `get_usage` | Orchestrator | Usage, free memory, CPU, number of running sessions, whether a new one may start (usage counts only with `pauseAtPct`), how sessions are started (`launcher`), and the list of profiles | `account/rateLimits/read` | `usage.json` |
-| `update_session` | Orchestrator | Update the record (status, notes, on hold) | `state.json` | `state.json` |
-| `wait_events` | Orchestrator | Wait for status changes, reports, approval requests, low memory, and usage limits being hit (with `pauseAtPct`) or reset | `thread/read` | `claude agents --json` |
+| `update_session` | Orchestrator | Update the record (status, notes, on hold, waiting for resources, adding an app session) | `state.json` | `state.json` |
+| `wait_events` | Orchestrator | Wait for status changes, reports, approval requests, low memory, usage limits being hit (with `pauseAtPct`) or reset, and room to start a task held back for resources | `thread/read` | `claude agents --json` |
 | `read_reports` | Orchestrator | Read reports | `reports.jsonl` | `reports.jsonl` |
 | `report` | Worker session | Report to the orchestrator | `reports.jsonl` | `reports.jsonl` |
 
@@ -419,6 +420,7 @@ To release a new version, set the same `version` in `.claude-plugin/plugin.json`
 | `src/tools.mjs` | Tools, limit checks, monitoring |
 | `src/backends/` | Implementations for Codex (app-server) and Claude Code (CLI) |
 | `src/setup.mjs` | Setup script (Codex registration and skill installation, Claude Code status line) |
+| `src/allow-report.mjs` / `hooks/hooks.json` | Hook that lets desktop app worker sessions call `report` without a prompt |
 | `src/claude-statusline.mjs` | Status line that records Claude Code usage |
 | `src/appserver.mjs` / `src/ws.mjs` | Codex app-server client (Node.js on Windows cannot use Unix domain sockets, so it talks WebSocket through `codex app-server proxy`) |
 | `skills/manage-sessions/` | The orchestrator's instructions (skill) |

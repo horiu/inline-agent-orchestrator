@@ -618,8 +618,11 @@ test('an app session is watched through its interactive row, found by title unti
   fake.sessions.push({ pid: 9, cwd: '/repo/.claude/worktrees/x', kind: 'interactive', startedAt: clock + 1000, sessionId: APP_SID, name: '試し', status: 'busy' });
   clock += 10_000;
   assert.equal((await backend.status(APP_ID, store.state().targets[APP_ID])).status, 'active');
-  assert.equal(store.state().targets[APP_ID].sessionId, APP_SID, 'bound by title');
-  // Renamed in the app: the bound ID still finds it.
+  assert.equal(store.state().targets[APP_ID].sessionId, undefined, 'a title alone does not bind');
+  // Once a report gives the ID, a rename in the app does not lose it.
+  const worker = createTools({ backend, store, sys: { env: { CLAUDE_CODE_SESSION_ID: APP_SID } } }).tools;
+  await worker.report.handler({ kind: 'progress', text: '途中', from: '試し' });
+  await tools.read_reports.handler({});
   fake.set(APP_SID, { name: '別の題名', status: 'idle' });
   const r = await tools.wait_events.handler({});
   assert.deepEqual(r.events.map((e) => [e.type, e.from, e.to]), [['status', 'active', 'idle']]);
@@ -666,7 +669,7 @@ test('claude --bg is refused with a clear reason when the CLI is not logged in',
   assert.equal(calls('--bg').length, 0);
 });
 
-test('two sessions with the title: the newest is watched, but neither is bound until a report says which', async () => {
+test('two sessions with the title: the newest is watched until a report says which one it is', async () => {
   setup({}, DESKTOP);
   await startInApp('同名');
   for (const [sid, at] of [[APP_SID, 1000], ['bbbbbbbb-bbbb-4ccc-8ddd-eeeeeeeeeeee', 2000]])

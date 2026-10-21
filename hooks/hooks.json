@@ -1,0 +1,17 @@
+{
+  "description": "Lets worker conversations started in the desktop app call the session-manager's report tool without a permission prompt (the app cannot give a session --allowedTools). report only appends to the local report mailbox.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "^mcp__plugin_inline-agent-orchestrator_session-manager__report$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/src/allow-report.mjs\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

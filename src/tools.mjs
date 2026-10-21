@@ -468,6 +468,10 @@ export function createTools({ backend, client, store, sys = {} }) {
           profile: { type: 'string' },
           model: { type: 'string' },
           effort: { type: 'string' },
+          waitForRoom: {
+            type: 'boolean',
+            description: 'status pending と一緒に true: 空きメモリ・CPU が足りずに待たせている仕事。見回りを続け、余裕ができたら roomAvailable を返す',
+          },
           remove: { type: 'boolean', default: false, description: 'true なら記録から外す' },
         },
       },
@@ -490,7 +494,7 @@ export function createTools({ backend, client, store, sys = {} }) {
 
     wait_events: {
       description:
-        '見回り。管理中の会話の状態の変化・作業の会話からの報告・承認や入力の待ち・空きメモリ不足・利用枠の超過（pauseAtPct があるとき）と回復を、起きるまで待って返す。何も起きなければ最長 intervalMin 分（省略時は設定の watchIntervalMin。設定より長くはできない）で timedOut を返す。待つ間はモデルを使わない。動いている会話・枠で止めた会話・未読の報告がどれも無ければすぐ idle=true を返す（見回りを止めてよい合図）。同時に呼べるのは1つだけ（新しい呼び出しが前のものを打ち切る）。',
+        '見回り。管理中の会話の状態の変化・作業の会話からの報告・承認や入力の待ち・空きメモリ不足・利用枠の超過（pauseAtPct があるとき）と回復・資源待ちの仕事を起こせる余裕（roomAvailable）を、起きるまで待って返す。何も起きなければ最長 intervalMin 分（省略時は設定の watchIntervalMin。設定より長くはできない）で timedOut を返す。待つ間はモデルを使わない。動いている会話・枠で止めた会話・資源待ちの仕事・未読の報告がどれも無ければすぐ idle=true を返す（見回りを止めてよい合図）。同時に呼べるのは1つだけ（新しい呼び出しが前のものを打ち切る）。',
       // Marked read-only for approval prompts: it changes no conversation's
       // content, only the manager's own read mark and last-seen statuses (and,
       // for Claude Code, it delivers messages the manager already queued).
@@ -515,6 +519,11 @@ export function createTools({ backend, client, store, sys = {} }) {
         const state = store.state();
         const ids = watchedIds(state);
         const paused = ids.filter((id) => state.targets[id].status === 'paused_usage');
+        // Work kept back for lack of memory or CPU keeps the watch going and
+        // is reported (roomAvailable) once there is room to start it.
+        const waitingRoom = Object.entries(state.targets)
+          .filter(([, t]) => t.status === 'pending' && t.waitForRoom)
+          .map(([id]) => id);
         const storedSeen = Object.fromEntries(ids.map((id) => [id, JSON.stringify(state.targets[id].lastSeen ?? null)]));
         const events = [];
         let reportsOffset = null;
@@ -572,7 +581,7 @@ export function createTools({ backend, client, store, sys = {} }) {
           // Threads paused for the usage limit keep the watch going until
           // usageRecovered has been reported for them.
           const waitForRecovery = paused.length > 0 && alerts.usageRecovered !== paused.slice().sort().join(',');
-          if (!events.length && !anyActive && !anyQueued && !waitForRecovery && !store.hasUnreadReports()) {
+          if (!events.length && !anyActive && !anyQueued && !waitForRecovery && !waitingRoom.length && !store.hasUnreadReports()) {
             if (!commit()) return cancelled;
             return { idle: true, events: [], live, hint: '動いている会話も未読の報告もありません。見回りを止めてよい' };
           }
@@ -603,6 +612,22 @@ export function createTools({ backend, client, store, sys = {} }) {
             if (low && !alerts.memoryLow)
               events.push({ type: 'memoryLow', freeMemGb: Number(freeGb.toFixed(2)), minFreeMemGb: cfg.minFreeMemGb });
             alerts.memoryLow = low;
+            if (waitingRoom.length) {
+              const maxCpu = typeof cfg.maxCpuPct === 'number' ? cfg.maxCpuPct : null;
+              const cpu = !low && maxCpu !== null ? await cpuPct() : null;
+              const room = !low && (cpu === null || cpu < maxCpu);
+              // Once per set of waiting work, not on every call.
+              const key = waitingRoom.slice().sort().join(',');
+              if (room && alerts.roomAvailable !== key)
+                events.push({
+                  type: 'roomAvailable',
+                  threadIds: waitingRoom,
+                  names: waitingRoom.map((id) => state.targets[id]?.name ?? null),
+                  freeMemGb: Number(freeGb.toFixed(2)),
+                  cpuPct: cpu,
+                });
+              alerts.roomAvailable = room ? key : null;
+            }
             if (!usageChecked) {
               usageChecked = true;
               // Without pauseAtPct nothing waits on the usage, so it is not
