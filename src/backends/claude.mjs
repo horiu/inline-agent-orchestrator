@@ -11,7 +11,8 @@
 
 import { spawn } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { homedir } from 'node:os';
+import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ToolError, iso, tail } from './common.mjs';
 
@@ -49,11 +50,18 @@ const waitingFlag = (waitingFor) => WAITING_FLAG[waitingFor] ?? (/limit/i.test(w
 
 // Trust is kept per folder in ~/.claude.json and, inside a git repository,
 // is looked up only up to the repository root: trusting a parent folder of
-// the repositories does not cover them.
+// the repositories does not cover them. The home directory's trust is never
+// saved, so there accepting the prompt does not help.
 function untrustedMessage(cwd) {
+  const same = (a, b) => (process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b);
+  if (same(resolve(cwd), resolve(homedir())))
+    return [
+      `作業フォルダ ${cwd} はホームディレクトリで、Claude Code はここの信頼を保存しないため、作業の会話を起こせません（承認しても次の claude --bg でまた止まる）。`,
+      'リポジトリのフォルダ（信頼済みのもの）を作業フォルダにしてください。',
+    ].join('\n');
   return [
     `作業フォルダ ${cwd} が Claude Code に信頼されていないため、作業の会話を起こせません（claude --bg は信頼の確認を出せない）。`,
-    `利用者に、この PC のターミナルで ${cwd} に移って claude を一度起動し、信頼の確認で承認してから終了してもらう。承認の後にもう一度 start_session を呼ぶ。`,
+    `利用者に、この PC のターミナルで ${cwd} に移って claude を一度起動し、信頼の確認で承認してから終了してもらう。承認の後に、失敗した操作（start_session か send_message）をもう一度呼ぶ（送り待ちの依頼は数分後に自動で送り直す）。`,
     '信頼はリポジトリごと（リポジトリを置く親フォルダを信頼しても、その下のリポジトリには効かない）。',
     'リモート（Remote Control やスマートフォン）から使っていて、利用者がその場で承認できないときは、信頼済みのリポジトリを作業フォルダにするか、PC に戻ってから承認してもらう。',
   ].join('\n');
@@ -106,8 +114,9 @@ export function claudeBackend({ store, claudePath = 'claude', permissionMode = '
     const res = await run(claudePath, args, opts);
     if (res.code !== 0) {
       const detail = (res.stderr || res.stdout).trim().slice(0, 500);
-      // Starting or resuming a session in a folder nobody has trusted yet.
-      if (opts?.cwd && /not trusted/i.test(detail)) throw new ToolError(untrustedMessage(opts.cwd));
+      // Starting or resuming a session in a folder nobody has trusted yet
+      // (without a cwd the CLI ran in this server's folder).
+      if (/not trusted/i.test(detail)) throw new ToolError(untrustedMessage(opts?.cwd ?? process.cwd()));
       const label = args[0].startsWith('--') ? args[0] : args.slice(0, 2).join(' ');
       throw new Error(`claude ${label} failed (exit ${res.code})${detail ? `: ${detail}` : ''}`);
     }

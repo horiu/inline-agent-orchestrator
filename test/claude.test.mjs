@@ -1,7 +1,7 @@
 import { test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { claudeBackend } from '../src/backends/claude.mjs';
 import { recordUsage, line } from '../src/claude-statusline.mjs';
@@ -368,7 +368,21 @@ test('an untrusted folder is explained instead of the raw CLI error', async () =
   fake.set(SID, { state: 'done', status: 'idle' });
   clock += 10_000;
   fake.failResume = 'Workspace not trusted. Run `claude` in /r once and accept the trust prompt, then retry.';
-  await assert.rejects(tools.send_message.handler({ threadId: SID, message: '続き' }), /\/r が Claude Code に信頼されていない/);
+  await assert.rejects(tools.send_message.handler({ threadId: SID, message: '続き' }), (err) => {
+    assert.match(err.message, /\/r が Claude Code に信頼されていない/);
+    assert.match(err.message, /send_message/, 'a resume is retried with send_message, not start_session');
+    return true;
+  });
+});
+
+test('the home directory is never trusted, so the manager is told to use a repository', async () => {
+  fake.failNext = 'Error: Workspace not trusted: ~ is the home directory, whose trust is never saved.';
+  await assert.rejects(tools.start_session.handler({ name: 'a', cwd: homedir(), prompt: 'p' }), (err) => {
+    assert.ok(err instanceof ToolError);
+    assert.match(err.message, /ホームディレクトリ/);
+    assert.doesNotMatch(err.message, /承認してから終了/);
+    return true;
+  });
 });
 
 test('threads paused for usage are released when pauseAtPct is off, even if usage cannot be read', async () => {

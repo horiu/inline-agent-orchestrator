@@ -508,24 +508,26 @@ export function createTools({ backend, client, store, sys = {} }) {
             alerts.memoryLow = low;
             if (!usageChecked) {
               usageChecked = true;
+              // Without pauseAtPct nothing waits on the usage, so it is not
+              // read, and threads still paused for it (from an earlier
+              // setting) are released.
               let u = null;
-              try {
-                u = await be.usage();
-              } catch {
-                // usage is advisory here; get_usage reports the error
+              if (pauseAt !== null) {
+                try {
+                  u = await be.usage();
+                } catch {
+                  // usage is advisory here; get_usage reports the error
+                }
               }
-              // Without pauseAtPct nothing waits on the usage, so threads
-              // still paused for it (from an earlier setting) are released
-              // even when it cannot be read.
               if (u || pauseAt === null) {
-                const over = pauseAt === null || !u ? [] : u.windows.filter((w) => w.usedPercent >= pauseAt);
+                const over = u ? u.windows.filter((w) => w.usedPercent >= pauseAt) : [];
                 const keys = over.map((w) => `${w.limitId}/${w.window}/${w.resetsAt}`);
                 const fresh = over.filter((_, i) => !alerts.usageHigh.includes(keys[i]));
                 if (fresh.length) events.push({ type: 'usageHigh', windows: fresh, pauseAtPct: pauseAt });
                 alerts.usageHigh = keys;
                 // Once per set of paused threads, not on every call.
                 const recoveredKey = paused.slice().sort().join(',');
-                const usable = pauseAt === null || (u.ordinaryUsageAllowed !== false && !u.stale);
+                const usable = !u || (u.ordinaryUsageAllowed !== false && !u.stale);
                 if (paused.length && !over.length && usable) {
                   if (alerts.usageRecovered !== recoveredKey)
                     events.push({
