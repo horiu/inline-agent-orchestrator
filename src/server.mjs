@@ -11,7 +11,7 @@ import { Store, agentOf } from './state.mjs';
 import { refreshStatuslineCopy } from './setup.mjs';
 import { createTools, ToolError } from './tools.mjs';
 
-export const SERVER_INFO = { name: 'inline-agent-orchestrator', version: '0.5.0' };
+export const SERVER_INFO = { name: 'inline-agent-orchestrator', version: '0.6.0' };
 
 // Worker conversations (CSM_ROLE=worker) see only `report`.
 export function toolsForRole(tools, role) {
