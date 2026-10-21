@@ -79,3 +79,39 @@ test('config.example.json shows exactly the built-in defaults', async () => {
   const example = JSON.parse(readFileSync(new URL('../config.example.json', import.meta.url), 'utf8'));
   assert.deepEqual(example, DEFAULT_CONFIG);
 });
+
+test('watchReports calls back when reports.jsonl is created or appended to, not for other files, and stops when closed', async () => {
+  const s = fresh();
+  let hits = 0;
+  let notify = () => {};
+  // The watcher does not keep the process alive, so the timer does.
+  const next = () =>
+    new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('no notice within 5 s')), 5000);
+      notify = () => {
+        clearTimeout(timer);
+        resolve();
+      };
+    });
+  const close = s.watchReports(() => {
+    hits++;
+    notify();
+  });
+  try {
+    s.saveState(s.state());
+    await new Promise((r) => setTimeout(r, 200));
+    assert.equal(hits, 0, 'state.json is not a report');
+    let got = next();
+    s.appendReport({ kind: 'progress', text: '一' });
+    await got;
+    got = next();
+    s.appendReport({ kind: 'done', text: '二' });
+    await got;
+  } finally {
+    close();
+  }
+  const seen = hits;
+  s.appendReport({ kind: 'done', text: '三' });
+  await new Promise((r) => setTimeout(r, 200));
+  assert.equal(hits, seen, 'nothing after close');
+});

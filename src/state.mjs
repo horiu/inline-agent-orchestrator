@@ -3,7 +3,7 @@
 //   Claude Code: $CLAUDE_CONFIG_DIR/session-manager-mcp/ (default ~/.claude/session-manager-mcp/)
 // CSM_HOME overrides both.
 
-import { mkdirSync, readFileSync, writeFileSync, renameSync, appendFileSync, existsSync, statSync, openSync, readSync, closeSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync, renameSync, appendFileSync, existsSync, statSync, openSync, readSync, closeSync, watch } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -38,6 +38,11 @@ export const DEFAULT_CONFIG = {
   // server itself checks every pollSec without using the model.
   watchIntervalMin: 30,
   pollSec: 5,
+  // The watch ends by itself (stuck) when nothing can move for this long:
+  // every session waits for the user (a question, an approval, an input) or
+  // for memory or CPU. Waiting for the usage limit does not count. null never
+  // ends it.
+  stopWhenStuckMin: 120,
   // Recommended model and effort per kind of work. The manager picks one with
   // start_session's `profile`. Codex model names change between releases, so
   // Codex profiles set only the effort and keep the user's default model.
@@ -233,6 +238,25 @@ export class Store {
         }
       });
     return { reports, nextOffset: start + Buffer.byteLength(complete, 'utf8') };
+  }
+
+  // Calls onChange when reports.jsonl may have changed, and returns a function
+  // that stops watching. fs.watch differs by platform (one change can come
+  // twice, a recreated file loses its watch, network drives send nothing), so
+  // the folder is watched (the file may not exist yet), the call is only a
+  // hint to read again with peekReports, and the caller keeps polling.
+  watchReports(onChange) {
+    let w;
+    try {
+      w = watch(this.dir, { persistent: false }, (_event, file) => {
+        // Some platforms give no file name; read again to be safe.
+        if (!file || String(file) === 'reports.jsonl') onChange();
+      });
+    } catch {
+      return () => {};
+    }
+    w.on('error', () => w.close());
+    return () => w.close();
   }
 
   hasUnreadReports() {

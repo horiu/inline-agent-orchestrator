@@ -1,6 +1,6 @@
 import { test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -606,4 +606,206 @@ test('work waiting for the usage limit is reported only once usage is back under
   fake.rateLimits.rateLimits.primary.usedPercent = 10;
   const r = await tools.wait_events.handler({});
   assert.deepEqual(r.events.map((e) => [e.type, e.names]), [['roomAvailable', ['枠']]]);
+});
+
+// Tools whose sleep is parked until released and whose report watcher is a
+// stand-in: notify() plays a change of reports.jsonl.
+function watchedTools() {
+  const w = { opened: 0, closed: 0, notify: () => {}, release: () => {} };
+  const t = createTools({
+    client: new AppServerClient({ connector: fake.connector() }),
+    store,
+    sys: {
+      freemem: () => 8 * GB,
+      totalmem: () => 16 * GB,
+      now: () => 0,
+      sleep: () => new Promise((r) => (w.release = r)),
+      watchReports: (onChange) => {
+        w.opened++;
+        w.notify = onChange;
+        return () => w.closed++;
+      },
+    },
+  }).tools;
+  return { t, w };
+}
+
+const settle = async () => {
+  for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
+};
+
+test('a written report wakes the watch at once, without waiting for the poll', async () => {
+  const { t, w } = watchedTools();
+  fake.addThread('a', { status: { type: 'active', activeFlags: [] } });
+  store.updateTarget('a', { name: 'A', status: 'running', lastSeen: { status: 'active', activeFlags: [] } });
+  const watching = t.wait_events.handler({ intervalMin: 5 / 60 });
+  await settle();
+  const polls = calls('thread/read').length;
+  await t.report.handler({ kind: 'done', text: '済み', from: 'A' });
+  w.notify();
+  w.notify(); // the same change can come twice
+  const r = await watching;
+  assert.deepEqual(r.events.map((e) => [e.type, e.text]), [['report', '済み']]);
+  assert.equal(calls('thread/read').length, polls, 'statuses are not read again for a report');
+  assert.deepEqual([w.opened, w.closed], [1, 1]);
+});
+
+test('a notice with no complete line goes back to waiting; the line is read once it is whole', async () => {
+  const { t, w } = watchedTools();
+  fake.addThread('a', { status: { type: 'active', activeFlags: [] } });
+  store.updateTarget('a', { name: 'A', status: 'running', lastSeen: { status: 'active', activeFlags: [] } });
+  const watching = t.wait_events.handler({ intervalMin: 5 / 60 });
+  await settle();
+  appendFileSync(store.reportsPath, '{"kind":"done","te');
+  w.notify();
+  await settle();
+  appendFileSync(store.reportsPath, 'xt":"後半"}\n');
+  w.notify();
+  const r = await watching;
+  assert.deepEqual(r.events.map((e) => [e.type, e.text]), [['report', '後半']]);
+});
+
+test('without a notice the poll still picks the report up', async () => {
+  const { t, w } = watchedTools();
+  fake.addThread('a', { status: { type: 'active', activeFlags: [] } });
+  store.updateTarget('a', { name: 'A', status: 'running', lastSeen: { status: 'active', activeFlags: [] } });
+  const watching = t.wait_events.handler({ intervalMin: 5 / 60 });
+  await settle();
+  await t.report.handler({ kind: 'progress', text: '途中' });
+  w.release(); // the poll's sleep ends; no notice came
+  const r = await watching;
+  assert.deepEqual(r.events.map((e) => e.text), ['途中']);
+  assert.deepEqual([w.opened, w.closed], [1, 1]);
+});
+
+test('the report watcher is closed on timeout, cancel and a newer call, and not opened when idle', async () => {
+  let opened = 0;
+  let closed = 0;
+  const watchReports = () => (opened++, () => closed++);
+  const client = new AppServerClient({ connector: fake.connector() });
+  const t = createTools({ client, store, sys: { freemem: () => 8 * GB, now: () => clock, sleep: async (ms) => (clock += ms), watchReports } }).tools;
+  fake.addThread('a', { status: { type: 'idle' } });
+  store.updateTarget('a', { name: 'A', status: 'running', lastSeen: { status: 'idle', activeFlags: [] } });
+  assert.equal((await t.wait_events.handler({})).idle, true);
+  assert.equal(opened, 0);
+  fake.threads.get('a').status = { type: 'active', activeFlags: [] };
+  store.updateTarget('a', { lastSeen: { status: 'active', activeFlags: [] } });
+  assert.equal((await t.wait_events.handler({ intervalMin: 2 / 60 })).timedOut, true);
+  assert.deepEqual([opened, closed], [1, 1]);
+
+  const { t: parked, w } = watchedTools();
+  const controller = new AbortController();
+  const first = parked.wait_events.handler({ intervalMin: 5 / 60 }, { signal: controller.signal });
+  await settle();
+  controller.abort();
+  assert.equal((await first).cancelled, true);
+  assert.equal(w.closed, 1);
+  const second = parked.wait_events.handler({ intervalMin: 5 / 60 });
+  await settle();
+  const releaseSecond = w.release;
+  parked.wait_events.handler({ intervalMin: 5 / 60 }); // a newer call, left waiting
+  await settle();
+  releaseSecond();
+  assert.equal((await second).cancelled, true);
+  assert.deepEqual([w.opened, w.closed], [3, 2]);
+});
+
+test('the watch ends as stuck when every session waits for the user for stopWhenStuckMin, counted across calls', async () => {
+  setup({ stopWhenStuckMin: 12 / 60 });
+  fake.addThread('a', { status: { type: 'active', activeFlags: ['waitingOnApproval'] } });
+  fake.addThread('q', { status: { type: 'idle' } });
+  store.updateTarget('a', { name: 'A', status: 'running', lastSeen: { status: 'active', activeFlags: ['waitingOnApproval'] } });
+  store.updateTarget('q', { name: 'Q', status: 'waiting_user', lastSeen: { status: 'idle', activeFlags: [] } });
+  await tools.report.handler({ kind: 'question', text: 'AとBどちらにしますか？', from: 'Q' });
+  await tools.read_reports.handler({});
+  const first = await tools.wait_events.handler({});
+  assert.equal(first.timedOut, true);
+  assert.equal(store.state().stuckSince, new Date(0).toISOString(), 'kept for the next call');
+  assert.equal((await tools.wait_events.handler({})).timedOut, true);
+  const r = await tools.wait_events.handler({});
+  assert.equal(r.stuck, true);
+  assert.equal(r.timedOut, false);
+  assert.ok(clock >= 12_000 && clock < 15_000, `ended at ${clock}`);
+  assert.deepEqual(
+    r.waiting.map((x) => [x.name, x.waitingFor, x.question, x.open]),
+    [
+      ['A', 'approval', null, 'codex resume a'],
+      ['Q', 'question', 'AとBどちらにしますか？', 'codex resume q'],
+    ],
+  );
+  assert.equal(store.state().stuckSince, null, 'the next watch counts again');
+  assert.equal((await tools.wait_events.handler({})).timedOut, true);
+});
+
+test('work waiting for memory or CPU counts as stuck; a working session does not', async () => {
+  setup({ stopWhenStuckMin: 3 / 60, minFreeMemGb: 4 });
+  freeGb = 1;
+  store.updateTarget('wait:次', { name: '次', status: 'pending', waitForRoom: true, waitSince: 'x', note: '依頼の要点' });
+  const r = await tools.wait_events.handler({});
+  // memoryLow comes first and restarts the count
+  assert.deepEqual(r.events.map((e) => e.type), ['memoryLow']);
+  const stuck = await tools.wait_events.handler({});
+  assert.equal(stuck.stuck, true);
+  assert.deepEqual(stuck.waiting.map((x) => [x.name, x.waitingFor, x.note, x.open]), [['次', 'room', '依頼の要点', null]]);
+
+  fake.addThread('a', { status: { type: 'active', activeFlags: [] } });
+  store.updateTarget('a', { name: 'A', status: 'running', lastSeen: { status: 'active', activeFlags: [] } });
+  assert.equal((await tools.wait_events.handler({})).timedOut, true);
+  assert.equal(store.state().stuckSince, null);
+});
+
+test('waiting for the usage limit never counts as stuck', async () => {
+  setup({ stopWhenStuckMin: 2 / 60 });
+  fake.addThread('a', { status: { type: 'active', activeFlags: ['waitingOnApproval'] } });
+  fake.addThread('u', { status: { type: 'active', activeFlags: ['waitingOnUsageLimit'] } });
+  store.updateTarget('a', { name: 'A', status: 'running', lastSeen: { status: 'active', activeFlags: ['waitingOnApproval'] } });
+  store.updateTarget('u', { name: 'U', status: 'running', lastSeen: { status: 'active', activeFlags: ['waitingOnUsageLimit'] } });
+  assert.equal((await tools.wait_events.handler({})).timedOut, true, 'a session waiting for the limit to reset');
+  store.updateTarget('u', { status: 'paused_usage', lastSeen: { status: 'idle', activeFlags: [] } });
+  fake.threads.get('u').status = { type: 'idle' };
+  fake.rateLimits.rateLimits.primary.usedPercent = 99;
+  assert.deepEqual((await tools.wait_events.handler({})).events.map((e) => e.type), ['usageHigh']);
+  assert.equal((await tools.wait_events.handler({})).timedOut, true, 'a session paused for the usage limit');
+});
+
+test('send_message, start_session and update_session restart the stuck count; null turns it off', async () => {
+  setup({ stopWhenStuckMin: 8 / 60 });
+  fake.addThread('a', { status: { type: 'active', activeFlags: ['waitingOnUserInput'] } });
+  store.updateTarget('a', { name: 'A', status: 'running', lastSeen: { status: 'active', activeFlags: ['waitingOnUserInput'] } });
+  assert.equal((await tools.wait_events.handler({})).timedOut, true);
+  await tools.update_session.handler({ threadId: 'a', note: '入力待ち' });
+  assert.equal((await tools.wait_events.handler({})).timedOut, true, 'counted from the update');
+  assert.equal(store.state().stuckSince, new Date(5000).toISOString());
+  const r = await tools.wait_events.handler({});
+  assert.equal(r.stuck, true);
+  assert.equal(r.waiting[0].waitingFor, 'input');
+
+  for (const act of [
+    () => tools.send_message.handler({ threadId: 'a', message: '続き', mode: 'queue' }),
+    () => tools.start_session.handler({ name: 'B', cwd: '/r', prompt: 'p', force: true }),
+  ]) {
+    const s = store.state();
+    s.activityAt = null;
+    store.saveState(s);
+    await act();
+    assert.equal(store.state().activityAt, new Date(clock).toISOString());
+  }
+
+  writeFileSync(join(store.dir, 'config.json'), JSON.stringify({ pollSec: 1, watchIntervalMin: 5 / 60, stopWhenStuckMin: null }));
+  await tools.update_session.handler({ threadId: 'thr_1', remove: true });
+  await tools.wait_events.handler({}); // the status change of the message to A
+  for (let i = 0; i < 4; i++) assert.equal((await tools.wait_events.handler({})).timedOut, true);
+  assert.equal(store.state().stuckSince, null);
+});
+
+test('a watch cancelled by the user restarts the stuck count', async () => {
+  const { t } = watchedTools();
+  fake.addThread('a', { status: { type: 'active', activeFlags: ['waitingOnApproval'] } });
+  store.updateTarget('a', { name: 'A', status: 'running', lastSeen: { status: 'active', activeFlags: ['waitingOnApproval'] } });
+  const controller = new AbortController();
+  const first = t.wait_events.handler({ intervalMin: 5 / 60 }, { signal: controller.signal });
+  await settle();
+  controller.abort();
+  assert.equal((await first).cancelled, true);
+  assert.equal(store.state().activityAt, new Date(0).toISOString());
 });

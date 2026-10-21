@@ -19,6 +19,7 @@
   },
   "watchIntervalMin": 30,
   "pollSec": 5,
+  "stopWhenStuckMin": 120,
   "profiles": {
     "design": {
       "description": "設計・方式の検討（API・データ構造・画面の構成を決める。1〜2ファイルで済む小さな修正は除く）",

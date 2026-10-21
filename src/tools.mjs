@@ -13,6 +13,9 @@ export { ToolError };
 
 const GB = 1024 ** 3;
 const ACTIVE_TARGET = new Set(['running', 'waiting_user', 'paused', 'paused_usage', 'failed']);
+// An active session with one of these flags waits for the user, not working.
+const WAITS_FOR_USER = { waitingOnApproval: 'approval', waitingOnUserInput: 'input' };
+const QUESTION_CHARS = 300;
 const RULES_FILE = { codex: 'AGENTS.md', claude: 'CLAUDE.md' };
 const CPU_SAMPLE_MS = 1000;
 
@@ -61,6 +64,7 @@ export function createTools({ backend, client, store, sys = {} }) {
   const sleep = sys.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
   const now = sys.now ?? (() => Date.now());
   const inGit = sys.inGit ?? inGitRepo;
+  const watchReports = sys.watchReports ?? ((onChange) => store.watchReports(onChange));
   // Where Claude Code workers start by default: app sessions when this
   // manager runs in the desktop app, background sessions (claude --bg) in a
   // terminal.
@@ -87,6 +91,49 @@ export function createTools({ backend, client, store, sys = {} }) {
   // Current and old names of the records, for reports written by name.
   function namesToIds(state) {
     return new Map(Object.entries(state.targets).flatMap(([id, t]) => [...(t.aliases ?? []), t.name].map((n) => [n, id])));
+  }
+
+  // Something the user asked for (a message, new work, a change of the
+  // records) restarts the count of the stuck watch.
+  function markActivity() {
+    const s = store.state();
+    s.activityAt = new Date(now()).toISOString();
+    store.saveState(s);
+  }
+
+  // What each stuck session waits for: name, state, the gist of its last
+  // question and how to open it.
+  function waitingList(state, ids, live) {
+    const byName = namesToIds(state);
+    const questions = new Map();
+    for (const r of store.peekReports({ all: true }).reports) {
+      const id = r.threadId ?? (r.from ? byName.get(r.from) ?? null : null);
+      if (r.kind === 'question' && id) questions.set(id, String(r.text ?? '').slice(0, QUESTION_CHARS));
+    }
+    const out = [];
+    for (const id of ids) {
+      const t = state.targets[id];
+      if (!t) continue;
+      const l = live[id];
+      const flag = (l?.activeFlags ?? []).find((f) => WAITS_FOR_USER[f]);
+      let waitingFor = null;
+      if (t.status === 'pending' && t.waitForRoom) waitingFor = 'room';
+      else if (l?.status === 'active' && flag) waitingFor = WAITS_FOR_USER[flag];
+      else if (t.status === 'waiting_user') waitingFor = 'question';
+      else if (t.status === 'running' && l?.status !== 'active') waitingFor = 'stopped';
+      if (!waitingFor) continue;
+      out.push({
+        threadId: id,
+        name: t.name,
+        status: t.status,
+        liveStatus: l?.status ?? null,
+        waitingFor,
+        question: questions.get(id) ?? null,
+        note: t.note ?? null,
+        open: t.status === 'pending' ? null : be.openCommand(id, t),
+      });
+    }
+    return out;
   }
 
   function appOnly(threadId, what) {
@@ -305,6 +352,7 @@ export function createTools({ backend, client, store, sys = {} }) {
           ([, t]) => (t.name === name || (t.aliases ?? []).includes(name)) && t.status !== 'done' && t.status !== 'pending',
         );
         if (clash) throw new ToolError(`「${name}」は管理中の会話（${clash[0]}）と同じ名前です。別の名前にしてください`);
+        markActivity();
         if (!force) {
           const g = await guard({ app: be.agent === 'claude' && (via ?? launcher) === 'app' });
           if (!g.canStartNew) return { started: false, reasons: g.reasons, guard: g, ...(be.agent === 'claude' ? { via: via ?? launcher } : {}) };
@@ -417,6 +465,7 @@ export function createTools({ backend, client, store, sys = {} }) {
         if (asked && !Object.keys(change).length)
           throw new ToolError(`profile「${profile}」には ${be.agent === 'claude' ? 'Claude Code' : 'Codex'} 用のモデル・エフォートがありません`);
         const result = await be.send(threadId, message, mode, store.state().targets[threadId], change);
+        markActivity();
         // The watch compares with lastSeen; mark the thread active so a turn
         // that ends before the next wait_events is still reported.
         if (store.state().targets[threadId])
@@ -511,6 +560,7 @@ export function createTools({ backend, client, store, sys = {} }) {
         },
       },
       async handler({ threadId, remove = false, ...patch }) {
+        markActivity();
         if (remove) {
           const s = store.state();
           const existed = Boolean(s.targets[threadId]);
@@ -531,7 +581,7 @@ export function createTools({ backend, client, store, sys = {} }) {
 
     wait_events: {
       description:
-        '見回り。管理中の会話の状態の変化・作業の会話からの報告・承認や入力の待ち・空きメモリ不足・利用枠の超過（pauseAtPct があるとき）と回復・資源待ちの仕事を起こせる余裕（roomAvailable）を、起きるまで待って返す。何も起きなければ最長 intervalMin 分（省略時は設定の watchIntervalMin。設定より長くはできない）で timedOut を返す。待つ間はモデルを使わない。動いている会話・枠で止めた会話・資源待ちの仕事・未読の報告がどれも無ければすぐ idle=true を返す（見回りを止めてよい合図）。同時に呼べるのは1つだけ（新しい呼び出しが前のものを打ち切る）。',
+        '見回り。管理中の会話の状態の変化・作業の会話からの報告・承認や入力の待ち・空きメモリ不足・利用枠の超過（pauseAtPct があるとき）と回復・資源待ちの仕事を起こせる余裕（roomAvailable）を、起きるまで待って返す（報告は書かれたらすぐ）。何も起きなければ最長 intervalMin 分（省略時は設定の watchIntervalMin。設定より長くはできない）で timedOut を返す。待つ間はモデルを使わない。動いている会話・枠で止めた会話・資源待ちの仕事・未読の報告がどれも無ければすぐ idle=true を返す（見回りを止めてよい合図）。進められる仕事が無い（どの会話も利用者の判断・承認・入力か、メモリ・CPU の空きを待っている）まま設定の stopWhenStuckMin 分（既定 120）続くと、stuck=true と待っているもの（waiting）を返す（見回りを止める合図。呼び出しをまたいで数え、状態の変化・報告・send_message・start_session・update_session で数え直す）。同時に呼べるのは1つだけ（新しい呼び出しが前のものを打ち切る）。',
       // Marked read-only for approval prompts: it changes no conversation's
       // content, only the manager's own read mark and last-seen statuses (and,
       // for Claude Code, it delivers messages the manager already queued).
@@ -549,6 +599,8 @@ export function createTools({ backend, client, store, sys = {} }) {
         const stale = () => myGen !== waitGen || Boolean(signal?.aborted);
         const aborted = signal ? new Promise((r) => signal.addEventListener('abort', r, { once: true })) : null;
         const cfg = store.config();
+        const pollMs = cfg.pollSec * 1000;
+        const stuckLimitMs = typeof cfg.stopWhenStuckMin === 'number' && cfg.stopWhenStuckMin > 0 ? cfg.stopWhenStuckMin * 60_000 : null;
         const maxMin = Math.min(Math.max(Number(cfg.watchIntervalMin) || DEFAULT_CONFIG.watchIntervalMin, 0), WATCH_INTERVAL_MAX_MIN);
         const limitMin = intervalMin > 0 ? Math.min(intervalMin, maxMin) : maxMin;
         const deadline = now() + limitMin * 60_000;
@@ -601,9 +653,26 @@ export function createTools({ backend, client, store, sys = {} }) {
             seen[id] = { status: b.status, activeFlags: b.activeFlags ?? [] };
           }
         };
+        // Since when nothing could move (ms, kept in state.json across calls):
+        // no session works, none waits for the usage limit and no message
+        // waits to be delivered.
+        const parseAt = (iso) => (iso ? Date.parse(iso) : NaN);
+        let stuckSince = Number.isFinite(parseAt(state.stuckSince)) ? parseAt(state.stuckSince) : null;
+        let usageBlocked = false;
+        const nothingMoves = (s, live) => {
+          const working = ids.some((id) => live[id]?.status === 'active' && !(live[id].activeFlags ?? []).some((f) => WAITS_FOR_USER[f]));
+          // Added while this call waits: not read yet, so counted as working.
+          const added = Object.entries(s.targets).some(([id, t]) => !ids.includes(id) && t.status === 'running');
+          const usageWait =
+            Object.values(s.targets).some((t) => t.status === 'paused_usage') ||
+            (usageBlocked && waitingRoom.some((id) => usageFor(state.targets[id])));
+          const queued = Object.values(s.targets).some((t) => t.queue?.length && (t.status === 'running' || t.status === 'waiting_user'));
+          return !working && !added && !usageWait && !queued;
+        };
         // Statuses, alerts and the report read mark are saved only when the
-        // result is actually returned.
-        const commit = () => {
+        // result is actually returned. The stuck count goes on only through a
+        // quiet timeout; anything returned starts it again.
+        const commit = (keepStuck = false) => {
           if (stale()) return false;
           const s = store.state();
           // Skip ids whose lastSeen was rewritten meanwhile (e.g. by
@@ -612,11 +681,22 @@ export function createTools({ backend, client, store, sys = {} }) {
             if (s.targets[id] && JSON.stringify(s.targets[id].lastSeen ?? null) === storedSeen[id]) s.targets[id].lastSeen = seen[id];
           }
           s.alerts = alerts;
+          s.stuckSince = keepStuck && stuckSince !== null ? new Date(stuckSince).toISOString() : null;
           if (reportsOffset !== null) s.reportsOffset = reportsOffset;
           store.saveState(s);
           return true;
         };
-        const cancelled = { cancelled: true, events: [], hint: '新しい見回りの呼び出しか取り消しで打ち切られた' };
+        // A call cancelled by the user (Esc) counts as the user being there:
+        // the next call starts the stuck count again.
+        const cancel = () => {
+          if (signal?.aborted) markActivity();
+          return { cancelled: true, events: [], hint: '新しい見回りの呼び出しか取り消しで打ち切られた' };
+        };
+        // A written report wakes the wait at once (woken stays set until the
+        // next read, so a report written meanwhile is not missed).
+        let woken = false;
+        let wake = () => {};
+        let closeWatch = () => {};
         try {
           let live = await liveStatuses(ids, state.targets);
           diff(live);
@@ -626,16 +706,22 @@ export function createTools({ backend, client, store, sys = {} }) {
           // usageRecovered has been reported for them.
           const waitForRecovery = paused.length > 0 && alerts.usageRecovered !== paused.slice().sort().join(',');
           if (!events.length && !anyActive && !anyQueued && !waitForRecovery && !waitingRoom.length && !store.hasUnreadReports()) {
-            if (!commit()) return cancelled;
+            if (!commit()) return cancel();
             return { idle: true, events: [], live, hint: '動いている会話も未読の報告もありません。見回りを止めてよい' };
           }
+          closeWatch = watchReports(() => {
+            woken = true;
+            wake();
+          });
+          let nextPoll = now() + pollMs;
+          let stuck = false;
           // Memory and usage alerts fire on the transition only (remembered in
           // state.json), so a lasting condition does not wake the manager on
           // every call.
           let usageChecked = false;
-          let usageBlocked = false;
           for (;;) {
-            if (stale()) return cancelled;
+            if (stale()) return cancel();
+            woken = false;
             try {
               const delivered = await be.tick(store.state().targets);
               events.push(...delivered);
@@ -712,19 +798,59 @@ export function createTools({ backend, client, store, sys = {} }) {
                 });
               alerts.roomAvailable = key;
             }
-            if (events.length || now() >= deadline) break;
-            const pause = sleep(Math.min(cfg.pollSec * 1000, Math.max(0, deadline - now())));
-            await (aborted ? Promise.race([pause, aborted]) : pause);
-            if (stale()) return cancelled;
+            if (events.length) break;
+            const s = stuckLimitMs === null ? null : store.state();
+            if (!s || !nothingMoves(s, live)) {
+              stuckSince = null;
+            } else {
+              const t = now();
+              const activityAt = parseAt(s.activityAt);
+              if (stuckSince === null || stuckSince > t) stuckSince = t;
+              if (Number.isFinite(activityAt) && activityAt > stuckSince) stuckSince = Math.min(activityAt, t);
+              if (t - stuckSince >= stuckLimitMs) {
+                stuck = true;
+                break;
+              }
+            }
+            if (now() >= deadline) break;
+            const pause = sleep(Math.max(0, Math.min(nextPoll, deadline) - now())).then(() => 'poll');
+            const nudge = new Promise((r) => {
+              wake = () => r('report');
+              if (woken) r('report');
+            });
+            const why = await Promise.race([pause, nudge, ...(aborted ? [aborted] : [])]);
+            wake = () => {};
+            if (stale()) return cancel();
             // Past the deadline, return instead of starting another round of
             // reads that could outlast the client's tool timeout.
             if (now() >= deadline) break;
+            // Woken by a report: read it without waiting for the next poll.
+            if (why === 'report') continue;
+            nextPoll = now() + pollMs;
             live = await liveStatuses(ids, store.state().targets);
             diff(live);
           }
-          if (!commit()) return cancelled;
-          return { idle: false, events, live, paused, timedOut: events.length === 0 };
+          if (stuck) {
+            const s = store.state();
+            const result = {
+              idle: false,
+              stuck: true,
+              stuckMin: Math.round((now() - stuckSince) / 60_000),
+              waiting: waitingList(s, [...ids, ...waitingRoom], live),
+              events: [],
+              live,
+              paused,
+              timedOut: false,
+              hint: '進められる仕事が無いまま続いたので見回りを止める合図。handoff.md を書き、利用者へ伝えてターンを終える（SKILL の「見回りが止まったとき」）',
+            };
+            if (!commit()) return cancel();
+            return result;
+          }
+          const quiet = events.length === 0;
+          if (!commit(quiet)) return cancel();
+          return { idle: false, events, live, paused, timedOut: quiet };
         } finally {
+          closeWatch();
           unsubscribe();
         }
       },
