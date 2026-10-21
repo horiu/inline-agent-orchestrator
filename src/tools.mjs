@@ -2,7 +2,9 @@
 // of the same coding agent (Codex or Claude Code, see src/backends/), plus one
 // tool (`report`) for the worker conversations to report back.
 
-import { freemem, totalmem } from 'node:os';
+import { existsSync } from 'node:fs';
+import { cpus, freemem, totalmem } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
 import { codexBackend } from './backends/codex.mjs';
 import { ToolError } from './backends/common.mjs';
 import { DEFAULT_CONFIG, TARGET_STATUSES, WATCH_INTERVAL_MAX_MIN, pauseAtPctFor } from './state.mjs';
@@ -12,8 +14,18 @@ export { ToolError };
 const GB = 1024 ** 3;
 const ACTIVE_TARGET = new Set(['running', 'waiting_user', 'paused', 'paused_usage', 'failed']);
 const RULES_FILE = { codex: 'AGENTS.md', claude: 'CLAUDE.md' };
+const CPU_SAMPLE_MS = 1000;
 
-export function workerInstructions(name, agent = 'codex') {
+// Sessions of the Claude Code desktop app are started, messaged and stopped
+// by the manager model with the app's own tools (mcp__ccd_*), which this
+// server cannot call; it only keeps their record and watches them.
+const APP_HINT = {
+  read: 'app の会話は mcp__ccd_session_mgmt__list_events（session_id にこの ID）で読む',
+  send: 'app の会話へは SendMessage（to にこの ID）で送る（動いていれば app が預かり、今のターンの後に届ける）。モデル・エフォートを変えるときは mcp__ccd_session_mgmt__set_session_model・set_session_effort',
+  stop: 'app の会話は mcp__ccd_session_mgmt__stop_session で止めてから、update_session で状態（例 paused）を記録する',
+};
+
+export function workerInstructions(name, agent = 'codex', { app = false } = {}) {
   const idHint = agent === 'codex' ? '、threadId には最初の依頼に書かれた ID' : '';
   return [
     `あなたは監視役の会話（session-manager）から仕事を受けた作業の会話「${name}」です。`,
@@ -22,8 +34,18 @@ export function workerInstructions(name, agent = 'codex') {
     '- 重い処理（ビルド・全件テスト・開発サーバーの起動など）に入る前に report（kind: "progress"）で一言書く',
     '- 終わったら report（kind: "done"）で結果（ブランチ・PR・残っていること）を書く。進められなくなったら kind: "blocked"',
     '- session-manager の他の道具（start_session・send_message・stop_session など）は使わない。それは監視役の仕事',
+    ...(app ? ['- ターンの最後の返事は、先頭の 400 字が監視役にも届く。結論（何をしたか・PR・待っていること）を先に書く'] : []),
     `- 共通の決まりは ${RULES_FILE[agent] ?? 'AGENTS.md'} に従う`,
   ].join('\n');
+}
+
+// Whether the folder is inside a git work tree (a `.git` folder, or the
+// `.git` file of a worktree, in it or a parent).
+export function inGitRepo(dir) {
+  for (let d = resolve(dir); ; d = dirname(d)) {
+    if (existsSync(join(d, '.git'))) return true;
+    if (dirname(d) === d) return false;
+  }
 }
 
 export function firstMessage(name, threadId, prompt) {
@@ -34,9 +56,67 @@ export function firstMessage(name, threadId, prompt) {
 export function createTools({ backend, client, store, sys = {} }) {
   const be = backend ?? codexBackend({ client, store });
   const mem = { free: sys.freemem ?? freemem, total: sys.totalmem ?? totalmem };
+  const cpuList = sys.cpus ?? cpus;
+  const env = sys.env ?? process.env;
   const sleep = sys.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
   const now = sys.now ?? (() => Date.now());
+  const inGit = sys.inGit ?? inGitRepo;
+  // Where Claude Code workers start by default: app sessions when this
+  // manager runs in the desktop app, background sessions (claude --bg) in a
+  // terminal.
+  const launcher = be.agent === 'claude' ? (env.CLAUDE_CODE_ENTRYPOINT === 'claude-desktop' ? 'app' : 'bg') : null;
   let waitGen = 0;
+
+  // Busy share (%) of all CPUs over a short sample; null when unknown.
+  async function cpuPct() {
+    const snap = () =>
+      cpuList().reduce(
+        (a, c) => {
+          const t = c.times;
+          return { idle: a.idle + t.idle, total: a.total + t.user + t.nice + t.sys + t.idle + t.irq };
+        },
+        { idle: 0, total: 0 },
+      );
+    const a = snap();
+    await sleep(CPU_SAMPLE_MS);
+    const b = snap();
+    const total = b.total - a.total;
+    return total > 0 ? Math.round((1 - (b.idle - a.idle) / total) * 100) : null;
+  }
+
+  // Current and old names of the records, for reports written by name.
+  function namesToIds(state) {
+    return new Map(Object.entries(state.targets).flatMap(([id, t]) => [...(t.aliases ?? []), t.name].map((n) => [n, id])));
+  }
+
+  function appOnly(threadId, what) {
+    if (store.state().targets[threadId]?.via === 'app') throw new ToolError(APP_HINT[what]);
+  }
+
+  // An app worker's report carries its Claude Code session ID, which links
+  // the record to its row in `claude agents` (the app's own ID is different).
+  // Only the first one counts: `from` is written by the caller, so a later
+  // report under the same name from another session must not move it.
+  // The ID must also be an app row of this record's title started after it,
+  // so an old worker of the same name cannot claim a new record.
+  // Binding is best effort: a failing `claude agents` leaves the record to
+  // the next report and never costs the report itself.
+  async function bindReporter(report, threadId) {
+    const t = threadId ? store.state().targets[threadId] : null;
+    if (t?.via !== 'app' || !report.sessionId || t.sessionId) return;
+    try {
+      const row = await be.appSessionRow?.(report.sessionId, t);
+      if (row) store.updateTarget(threadId, { sessionId: report.sessionId, pid: row.pid ?? null });
+    } catch {
+      // try again with a later report
+    }
+  }
+
+  // The desktop app draws no status line, so usage.json there can only be
+  // left over from the terminal: pauseAtPct does not apply to app launches.
+  function pauseAtFor(cfg, app) {
+    return app ? null : pauseAtPctFor(cfg, be.agent);
+  }
 
   async function liveStatuses(ids, targets) {
     const out = {};
@@ -82,18 +162,21 @@ export function createTools({ backend, client, store, sys = {} }) {
     }));
   }
 
-  // Load guard: number of running conversations, free memory, and usage
-  // limits when pauseAtPct is set for this agent.
-  async function guard() {
+  // Load guard: free memory, CPU (when maxCpuPct is set) and usage limits
+  // (when pauseAtPct is set for this agent). The number of running
+  // conversations is reported but does not limit anything.
+  async function guard({ app = launcher === 'app' } = {}) {
     const cfg = store.config();
-    const pauseAt = pauseAtPctFor(cfg, be.agent);
+    const pauseAt = pauseAtFor(cfg, app);
+    const maxCpu = typeof cfg.maxCpuPct === 'number' ? cfg.maxCpuPct : null;
     const state = store.state();
     const live = await liveStatuses(watchedIds(state), state.targets);
     const running = Object.values(live).filter((s) => s.status === 'active').length;
     const freeGb = mem.free() / GB;
+    const cpu = maxCpu === null ? null : await cpuPct();
     const reasons = [];
-    if (running >= cfg.maxRunning) reasons.push(`動いている会話が ${running} 本（上限 ${cfg.maxRunning}）`);
     if (freeGb < cfg.minFreeMemGb) reasons.push(`空きメモリ ${freeGb.toFixed(1)} GB（下限 ${cfg.minFreeMemGb} GB）`);
+    if (cpu !== null && cpu >= maxCpu) reasons.push(`CPU の使用率 ${cpu}%（上限 ${maxCpu}%）`);
     let usage = null;
     try {
       usage = await be.usage();
@@ -116,11 +199,13 @@ export function createTools({ backend, client, store, sys = {} }) {
       canStartNew: reasons.length === 0,
       reasons,
       running,
-      maxRunning: cfg.maxRunning,
       freeMemGb: Number(freeGb.toFixed(2)),
       totalMemGb: Number((mem.total() / GB).toFixed(2)),
       minFreeMemGb: cfg.minFreeMemGb,
+      cpuPct: cpu,
+      maxCpuPct: maxCpu,
       pauseAtPct: pauseAt,
+      launcher,
       usage,
       live,
     };
@@ -175,13 +260,14 @@ export function createTools({ backend, client, store, sys = {} }) {
         },
       },
       async handler({ threadId, turns = 2, maxChars = 6000 }) {
+        appOnly(threadId, 'read');
         return be.read(threadId, { turns, maxChars }, store.state().targets[threadId]);
       },
     },
 
     start_session: {
       description:
-        '新しい作業の会話を起こして、最初の依頼を送る（名前・作業フォルダ・モデル・エフォート）。モデルとエフォートは、仕事の種類に合う profile（get_usage の profiles）で選ぶのが基本。model・effort を書くと profile より優先する。会話はこの会話とは別に動き、この会話が終わっても動き続ける。動いている数・空きメモリ・利用枠（pauseAtPct があるとき）の上限を超えるときは起こさずに理由を返す（force=true で無視）。名前は管理中の会話と重ねない。',
+        '新しい作業の会話を起こして、最初の依頼を送る（名前・作業フォルダ・モデル・エフォート）。モデルとエフォートは、仕事の種類に合う profile（get_usage の profiles）で選ぶのが基本。model・effort を書くと profile より優先する。会話はこの会話とは別に動き、この会話が終わっても動き続ける。空きメモリ・CPU・利用枠（pauseAtPct があるとき）に余裕が無いときは起こさずに理由を返す（force=true で無視）。名前は管理中の会話と重ねない。Claude Code の via="app"（デスクトップ app での既定）では、この道具は起こさずに、app の mcp__ccd_session__start_session に渡す値（appStart）と、起こした後に update_session に渡す値（record）を返す（startInApp=true）。',
       inputSchema: {
         type: 'object',
         required: ['name', 'cwd', 'prompt'],
@@ -200,12 +286,18 @@ export function createTools({ backend, client, store, sys = {} }) {
             description: 'Claude Code だけ',
           },
           area: { type: 'string', description: '触る場所の一言（ファイル・画面・機能）。思いつきの振り分けに使う' },
+          via: {
+            type: 'string',
+            enum: ['app', 'bg'],
+            description: 'Claude Code だけ: app＝デスクトップ app の会話（サイドバーに出てピン止めできる）、bg＝claude --bg。省略時は監視役がデスクトップ app なら app、ターミナルなら bg',
+          },
           force: { type: 'boolean', default: false },
         },
       },
-      async handler({ name, cwd, prompt, profile, model, effort, sandbox, approvalPolicy, permissionMode, area, force = false }) {
+      async handler({ name, cwd, prompt, profile, model, effort, sandbox, approvalPolicy, permissionMode, area, via, force = false }) {
         const cfg = store.config();
         const run = resolveRun(cfg, { profile, model, effort });
+        if (via && be.agent !== 'claude') throw new ToolError('via は Claude Code だけで使える');
         // pending records are work waiting to be started, often under this name.
         // Old names (aliases) count too: reports written under them must keep
         // pointing at one session.
@@ -214,12 +306,35 @@ export function createTools({ backend, client, store, sys = {} }) {
         );
         if (clash) throw new ToolError(`「${name}」は管理中の会話（${clash[0]}）と同じ名前です。別の名前にしてください`);
         if (!force) {
-          const g = await guard();
-          if (!g.canStartNew) return { started: false, reasons: g.reasons, guard: g };
+          const g = await guard({ app: be.agent === 'claude' && (via ?? launcher) === 'app' });
+          if (!g.canStartNew) return { started: false, reasons: g.reasons, guard: g, ...(be.agent === 'claude' ? { via: via ?? launcher } : {}) };
         }
         const d = cfg.defaults;
         const useModel = run.model ?? d.model ?? null;
         const useEffort = run.effort ?? d.effort ?? null;
+        if ((via ?? launcher) === 'app') {
+          // The manager starts it with the app's tool and then records it.
+          const appStart = {
+            initiation: 'user_asked',
+            context: 'fresh',
+            title: name,
+            prompt: firstMessage(name, null, prompt),
+            background: workerInstructions(name, be.agent, { app: true }),
+            // A worktree needs a git repository; other folders are used as they are.
+            use_worktree: inGit(cwd),
+            cwd,
+            permission_mode: permissionMode ?? cfg.claude?.permissionMode,
+            ...(useModel ? { model: useModel } : {}),
+            ...(useEffort ? { effort: useEffort } : {}),
+          };
+          return {
+            started: false,
+            startInApp: true,
+            appStart,
+            record: { name, status: 'running', via: 'app', cwd, area: area ?? undefined, profile: run.profile ?? undefined, model: useModel ?? undefined, effort: useEffort ?? undefined },
+            next: 'mcp__ccd_session__start_session を appStart の値で呼ぶ（cwd が監視役と同じフォルダなら省く）。返った session id（local_…）を threadId にして update_session を record の値で呼び、mcp__ccd_sidebar__set_pinned（pinned true）でピン止めする',
+          };
+        }
         let createdId = null;
         try {
           const res = await be.start(
@@ -293,6 +408,7 @@ export function createTools({ backend, client, store, sys = {} }) {
         },
       },
       async handler({ threadId, message, mode = 'auto', profile, model, effort }) {
+        appOnly(threadId, 'send');
         const asked = profile || model || effort;
         const run = asked ? resolveRun(store.config(), { profile, model, effort }) : null;
         const change = {};
@@ -326,6 +442,7 @@ export function createTools({ backend, client, store, sys = {} }) {
         },
       },
       async handler({ threadId, markAs = 'paused' }) {
+        appOnly(threadId, 'stop');
         const res = await be.stop(threadId, store.state().targets[threadId]);
         // Messages the manager was holding for this session (Claude Code) are
         // dropped: a stopped session must not be restarted by them.
@@ -345,7 +462,10 @@ export function createTools({ backend, client, store, sys = {} }) {
       },
       async handler({ threadId, name }) {
         const target = store.state().targets[threadId];
-        const res = await be.rename(threadId, name, target);
+        const res =
+          target?.via === 'app'
+            ? { renamed: false, note: 'app の会話の題名は mcp__ccd_session_mgmt__set_session_title で変える（ここでは監視役の記録だけを変えた）' }
+            : await be.rename(threadId, name, target);
         // Keep old names so reports written under them still match.
         if (target) store.updateTarget(threadId, { name, aliases: [...new Set([...(target.aliases ?? []), target.name])] });
         return { threadId, name, ...res };
@@ -364,7 +484,7 @@ export function createTools({ backend, client, store, sys = {} }) {
 
     update_session: {
       description:
-        '監視役の記録（state.json）を書き換える。管理に加える・状態（running / waiting_user / done / pending=保留 / paused=手で止めた / paused_usage=利用枠で止めた / failed）・一言のメモ・触る場所。会話そのものには何もしない。',
+        '監視役の記録（state.json）を書き換える。管理に加える（app の会話は start_session が返した record の値で）・状態（running / waiting_user / done / pending=保留 / paused=手で止めた / paused_usage=利用枠で止めた / failed）・一言のメモ・触る場所。会話そのものには何もしない。',
       inputSchema: {
         type: 'object',
         required: ['threadId'],
@@ -374,6 +494,19 @@ export function createTools({ backend, client, store, sys = {} }) {
           status: { type: 'string', enum: TARGET_STATUSES },
           note: { type: 'string' },
           area: { type: 'string' },
+          via: {
+            type: 'string',
+            enum: ['app', 'bg'],
+            description: 'app: app の会話を管理に加えるとき（start_session の record の値）。資源待ちの記録には、断った start_session が返した via を入れる',
+          },
+          cwd: { type: 'string' },
+          profile: { type: 'string' },
+          model: { type: 'string' },
+          effort: { type: 'string' },
+          waitForRoom: {
+            type: 'boolean',
+            description: 'status pending と一緒に true: 空きメモリ・CPU が足りずに待たせている仕事。見回りを続け、余裕ができたら roomAvailable を返す',
+          },
           remove: { type: 'boolean', default: false, description: 'true なら記録から外す' },
         },
       },
@@ -386,13 +519,19 @@ export function createTools({ backend, client, store, sys = {} }) {
           return { threadId, removed: existed };
         }
         const clean = Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined));
+        // A newly added app session counts as working, so the watch reports
+        // the end of its first turn.
+        const prev = store.state().targets[threadId];
+        if (clean.waitForRoom && !prev?.waitForRoom) clean.waitSince = new Date(now()).toISOString();
+        if (clean.via === 'app' && !prev)
+          Object.assign(clean, { startedAt: new Date(now()).toISOString(), lastSeen: { status: 'active', activeFlags: [] } });
         return { threadId, target: store.updateTarget(threadId, clean) };
       },
     },
 
     wait_events: {
       description:
-        '見回り。管理中の会話の状態の変化・作業の会話からの報告・承認や入力の待ち・空きメモリ不足・利用枠の超過（pauseAtPct があるとき）と回復を、起きるまで待って返す。何も起きなければ最長 intervalMin 分（省略時は設定の watchIntervalMin。設定より長くはできない）で timedOut を返す。待つ間はモデルを使わない。動いている会話・枠で止めた会話・未読の報告がどれも無ければすぐ idle=true を返す（見回りを止めてよい合図）。同時に呼べるのは1つだけ（新しい呼び出しが前のものを打ち切る）。',
+        '見回り。管理中の会話の状態の変化・作業の会話からの報告・承認や入力の待ち・空きメモリ不足・利用枠の超過（pauseAtPct があるとき）と回復・資源待ちの仕事を起こせる余裕（roomAvailable）を、起きるまで待って返す。何も起きなければ最長 intervalMin 分（省略時は設定の watchIntervalMin。設定より長くはできない）で timedOut を返す。待つ間はモデルを使わない。動いている会話・枠で止めた会話・資源待ちの仕事・未読の報告がどれも無ければすぐ idle=true を返す（見回りを止めてよい合図）。同時に呼べるのは1つだけ（新しい呼び出しが前のものを打ち切る）。',
       // Marked read-only for approval prompts: it changes no conversation's
       // content, only the manager's own read mark and last-seen statuses (and,
       // for Claude Code, it delivers messages the manager already queued).
@@ -410,20 +549,30 @@ export function createTools({ backend, client, store, sys = {} }) {
         const stale = () => myGen !== waitGen || Boolean(signal?.aborted);
         const aborted = signal ? new Promise((r) => signal.addEventListener('abort', r, { once: true })) : null;
         const cfg = store.config();
-        const pauseAt = pauseAtPctFor(cfg, be.agent);
         const maxMin = Math.min(Math.max(Number(cfg.watchIntervalMin) || DEFAULT_CONFIG.watchIntervalMin, 0), WATCH_INTERVAL_MAX_MIN);
         const limitMin = intervalMin > 0 ? Math.min(intervalMin, maxMin) : maxMin;
         const deadline = now() + limitMin * 60_000;
         const state = store.state();
         const ids = watchedIds(state);
         const paused = ids.filter((id) => state.targets[id].status === 'paused_usage');
+        // Work kept back for lack of memory or CPU keeps the watch going and
+        // is reported (roomAvailable) once there is room to start it.
+        const waitingRoom = Object.entries(state.targets)
+          .filter(([, t]) => t.status === 'pending' && t.waitForRoom)
+          .map(([id]) => id);
+        // In the desktop app the usage counts only for background sessions
+        // (started with via "bg", or before) and work waiting to start as one.
+        const usageFor = (t) => launcher !== 'app' || (t.status === 'pending' ? t.via === 'bg' : t.via !== 'app');
+        const pauseAt = pauseAtFor(cfg, ![...ids, ...waitingRoom].some((id) => usageFor(state.targets[id])));
         const storedSeen = Object.fromEntries(ids.map((id) => [id, JSON.stringify(state.targets[id].lastSeen ?? null)]));
         const events = [];
         let reportsOffset = null;
         const alerts = { memoryLow: false, usageHigh: [], ...(state.alerts ?? {}) };
-        const byName = new Map(
-          Object.entries(state.targets).flatMap(([id, t]) => [...(t.aliases ?? []), t.name].map((n) => [n, id])),
-        );
+        // roomAvailable fires once per set of records with room; a record put
+        // back under the same ID later is new work (waitSince differs).
+        const roomKey = (list) => list.map((id) => `${id}@${state.targets[id].waitSince ?? ''}`).sort().join(',');
+        if (!waitingRoom.length) alerts.roomAvailable = null;
+        const byName = namesToIds(state);
         const unsubscribe = be.onEvent((msg) => {
           const p = msg.params ?? {};
           if (msg.id !== undefined && p.threadId && ids.includes(p.threadId)) {
@@ -476,7 +625,7 @@ export function createTools({ backend, client, store, sys = {} }) {
           // Threads paused for the usage limit keep the watch going until
           // usageRecovered has been reported for them.
           const waitForRecovery = paused.length > 0 && alerts.usageRecovered !== paused.slice().sort().join(',');
-          if (!events.length && !anyActive && !anyQueued && !waitForRecovery && !store.hasUnreadReports()) {
+          if (!events.length && !anyActive && !anyQueued && !waitForRecovery && !waitingRoom.length && !store.hasUnreadReports()) {
             if (!commit()) return cancelled;
             return { idle: true, events: [], live, hint: '動いている会話も未読の報告もありません。見回りを止めてよい' };
           }
@@ -484,6 +633,7 @@ export function createTools({ backend, client, store, sys = {} }) {
           // state.json), so a lasting condition does not wake the manager on
           // every call.
           let usageChecked = false;
+          let usageBlocked = false;
           for (;;) {
             if (stale()) return cancelled;
             try {
@@ -499,6 +649,7 @@ export function createTools({ backend, client, store, sys = {} }) {
             reportsOffset = peek.nextOffset;
             for (const r of peek.reports) {
               const threadId = r.threadId ?? (r.from ? byName.get(r.from) ?? null : null);
+              await bindReporter(r, threadId);
               events.push({ type: 'report', ...r, threadId });
             }
             const freeGb = mem.free() / GB;
@@ -523,8 +674,12 @@ export function createTools({ backend, client, store, sys = {} }) {
                 const over = u ? u.windows.filter((w) => w.usedPercent >= pauseAt) : [];
                 const keys = over.map((w) => `${w.limitId}/${w.window}/${w.resetsAt}`);
                 const fresh = over.filter((_, i) => !alerts.usageHigh.includes(keys[i]));
-                if (fresh.length) events.push({ type: 'usageHigh', windows: fresh, pauseAtPct: pauseAt });
+                // Only these sessions are held to pauseAtPct (in the desktop
+                // app, app sessions are not).
+                if (fresh.length)
+                  events.push({ type: 'usageHigh', windows: fresh, pauseAtPct: pauseAt, threadIds: ids.filter((id) => usageFor(state.targets[id])) });
                 alerts.usageHigh = keys;
+                usageBlocked = over.length > 0 || u?.ordinaryUsageAllowed === false;
                 // Once per set of paused threads, not on every call.
                 const recoveredKey = paused.slice().sort().join(',');
                 const usable = !u || (u.ordinaryUsageAllowed !== false && !u.stale);
@@ -540,6 +695,22 @@ export function createTools({ backend, client, store, sys = {} }) {
                   alerts.usageRecovered = null;
                 }
               }
+            }
+            if (waitingRoom.length) {
+              const maxCpu = typeof cfg.maxCpuPct === 'number' ? cfg.maxCpuPct : null;
+              const ready = low ? [] : waitingRoom.filter((id) => !(usageBlocked && usageFor(state.targets[id])));
+              const cpu = ready.length && maxCpu !== null ? await cpuPct() : null;
+              const room = ready.length > 0 && (cpu === null || cpu < maxCpu);
+              const key = room ? roomKey(ready) : null;
+              if (room && alerts.roomAvailable !== key)
+                events.push({
+                  type: 'roomAvailable',
+                  threadIds: ready,
+                  names: ready.map((id) => state.targets[id]?.name ?? null),
+                  freeMemGb: Number(freeGb.toFixed(2)),
+                  cpuPct: cpu,
+                });
+              alerts.roomAvailable = key;
             }
             if (events.length || now() >= deadline) break;
             const pause = sleep(Math.min(cfg.pollSec * 1000, Math.max(0, deadline - now())));
@@ -570,8 +741,13 @@ export function createTools({ backend, client, store, sys = {} }) {
         },
       },
       async handler({ all = false, limit = 50 }) {
-        const reports = store.readReports({ all, advance: !all });
-        return { reports: all ? reports.slice(-limit).reverse() : reports };
+        if (all) return { reports: store.readReports({ all: true }).slice(-limit).reverse() };
+        // The read mark moves only after the reports are handled.
+        const { reports, nextOffset } = store.peekReports();
+        const byName = namesToIds(store.state());
+        for (const r of reports) await bindReporter(r, r.threadId ?? (r.from ? byName.get(r.from) ?? null : null));
+        store.commitReportsOffset(nextOffset);
+        return { reports };
       },
     },
 
@@ -589,7 +765,9 @@ export function createTools({ backend, client, store, sys = {} }) {
         },
       },
       async handler({ kind, text, from, threadId }) {
-        store.appendReport({ kind, text, from: from ?? null, threadId: threadId ?? null });
+        // Claude Code gives its MCP servers the session's ID.
+        const sessionId = be.agent === 'claude' ? env.CLAUDE_CODE_SESSION_ID ?? null : null;
+        store.appendReport({ kind, text, from: from ?? null, threadId: threadId ?? null, ...(sessionId ? { sessionId } : {}) });
         return { ok: true };
       },
     },

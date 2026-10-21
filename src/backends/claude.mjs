@@ -5,6 +5,12 @@
 //   claude --resume <session-id> --bg ... "<msg>"  new prompt into an existing session (v2.1.257+)
 //   claude logs <id>                            recent output
 //   claude stop <id>                            stop a session
+//   claude auth status                          whether the CLI is logged in
+// Sessions of the desktop app (records with via "app") are started and
+// messaged by the manager model with the app's tools; here they are only
+// watched, through their `kind: "interactive"` rows in `claude agents --json`
+// (status busy / idle). Those rows carry the Claude Code session ID, which
+// differs from the app's ID (local_…) the record is kept under.
 // Plan limits are not available from the CLI; the status line script
 // (src/claude-statusline.mjs) records `rate_limits` into usage.json. The
 // desktop app draws no status line, so there usage.json is never written.
@@ -21,6 +27,8 @@ const SETUP_PATH = fileURLToPath(new URL('../setup.mjs', import.meta.url)).repla
 const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 const SHORT_ID = /claude (?:attach|logs|stop) (\S+)/;
 const USAGE_STALE_MS = 30 * 60 * 1000;
+// An app session may take a while to show up in `claude agents`.
+const APP_START_GRACE_MS = 3 * 60 * 1000;
 // Queued messages are delivered only to sessions the manager still runs.
 const DELIVER_TO = new Set(['running', 'waiting_user']);
 export const WORKER_SERVER = 'session-report';
@@ -99,6 +107,9 @@ export function runClaude(claudePath, args, { cwd, timeoutMs = 60000 } = {}) {
 
 function mapEntry(e) {
   if (!e) return { status: 'notLoaded', activeFlags: [] };
+  // Desktop app and terminal sessions: status only.
+  if (e.kind === 'interactive')
+    return e.status === 'idle' ? { status: 'idle', activeFlags: [] } : { status: 'active', activeFlags: e.waitingFor ? [waitingFlag(e.waitingFor)] : [] };
   if (e.state === 'failed') return { status: 'systemError', activeFlags: [] };
   const flag = e.waitingFor ? waitingFlag(e.waitingFor) : null;
   if (e.state === 'blocked') return { status: 'active', activeFlags: [flag ?? 'waitingOnUserInput'] };
@@ -121,6 +132,26 @@ export function claudeBackend({ store, claudePath = 'claude', permissionMode = '
       throw new Error(`claude ${label} failed (exit ${res.code})${detail ? `: ${detail}` : ''}`);
     }
     return res.stdout;
+  }
+
+  // A CLI that is not logged in (the desktop app signs in on its own, not
+  // for the CLI) starts a background session that only says "Not logged in".
+  // When the status cannot be read, starting goes ahead.
+  async function ensureLoggedIn() {
+    let loggedIn = null;
+    try {
+      const res = await run(claudePath, ['auth', 'status'], { timeoutMs: 20000 });
+      loggedIn = JSON.parse(res.stdout).loggedIn;
+    } catch {
+      // unknown
+    }
+    if (loggedIn === false)
+      throw new ToolError(
+        [
+          'この PC の claude コマンド（CLI）がログインしていないため、claude --bg の作業の会話は動けません（デスクトップ app のログインは CLI には効かない）。',
+          'デスクトップ app では via="app"（app の会話）で起こす。claude --bg を使うなら、利用者にターミナルで claude を起動して /login してもらう。',
+        ].join('\n'),
+      );
   }
 
   // One `claude agents --json --all` call serves every lookup in a short burst
@@ -148,14 +179,44 @@ export function claudeBackend({ store, claudePath = 'claude', permissionMode = '
     if (target?.sessionId) {
       const bySid = list.find((e) => e.sessionId === target.sessionId);
       if (bySid) return bySid;
+      // An app session can go on under a new session ID (a fork, e.g. on
+      // compaction) in the same process: follow it by the process ID.
+      const byPid = target.via === 'app' && target.pid ? list.find((e) => e.kind === 'interactive' && e.pid === target.pid) : null;
+      if (byPid?.sessionId) {
+        store.updateTarget(id, { sessionId: byPid.sessionId });
+        return byPid;
+      }
     }
-    return list.find((e) => e.sessionId === id || e.id === id) ?? null;
+    const hit = list.find((e) => e.sessionId === id || e.id === id) ?? null;
+    // A bound app session that is not listed has stopped; another session
+    // of the same title must not stand in for it.
+    if (hit || target?.via !== 'app' || target.sessionId) return hit;
+    // Until its first report gives the session ID, an app session is found
+    // by its title (the name it was started with), started after the record.
+    // The match is not kept: a terminal or VS Code session of the same title
+    // is an interactive row too and must not take the record over.
+    return appRows(list, target)[0] ?? null;
+  }
+
+  // Interactive rows that may be the app session of a record: its title (or
+  // an old one), started after the record, newest first.
+  function appRows(list, target) {
+    const since = Date.parse(target.startedAt ?? '') - 60_000;
+    const names = new Set([target.name, ...(target.aliases ?? [])]);
+    return list
+      .filter((e) => e.kind === 'interactive' && names.has(e.name) && !(e.startedAt < since))
+      .sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0));
+  }
+
+  // A just-started app session that is not listed yet counts as working.
+  function appStarting(target) {
+    return target?.via === 'app' && now() - Date.parse(target.startedAt ?? '') < APP_START_GRACE_MS;
   }
 
   // threadId is the record key when the manager tracks the session, so every
   // tool keeps addressing the same record after a copy.
   function summarize(e, key, target) {
-    const m = mapEntry(e);
+    const m = !e && appStarting(target) ? { status: 'active', activeFlags: [] } : mapEntry(e);
     return {
       threadId: key ?? e?.sessionId ?? e?.id,
       sessionId: e?.sessionId ?? target?.sessionId ?? null,
@@ -168,6 +229,7 @@ export function claudeBackend({ store, claudePath = 'claude', permissionMode = '
       kind: e?.kind ?? null,
       cwd: e?.cwd ?? target?.cwd ?? null,
       startedAt: typeof e?.startedAt === 'number' ? new Date(e.startedAt).toISOString() : null,
+      ...(target?.via === 'app' ? { via: 'app' } : {}),
       managed: target
         ? {
             status: target.status,
@@ -227,6 +289,7 @@ export function claudeBackend({ store, claudePath = 'claude', permissionMode = '
   // a copy and says so when the session is already running" (claude --help).
   // A different short id or session ID in the output means a copy: follow it.
   async function resume(id, target, sessionId, message, cwd) {
+    await ensureLoggedIn();
     // Only sessions this manager started (their record keeps the worker
     // instructions) are relaunched as workers; any other session keeps its own
     // permission mode and tools.
@@ -254,12 +317,18 @@ export function claudeBackend({ store, claudePath = 'claude', permissionMode = '
     agent: 'claude',
     // The session id is only known after `claude --bg` returns.
     firstMessageHasId: false,
-    openCommand: (id, target) => `claude attach ${target?.jobId ?? id}`,
+    openCommand: (id, target) => (target?.via === 'app' ? `デスクトップ app のサイドバー（ピン止め）の「${target.name}」` : `claude attach ${target?.jobId ?? id}`),
 
     onEvent: () => () => {},
 
+    // The row of a reported session ID, when it is the app session of a record.
+    async appSessionRow(sessionId, target) {
+      return appRows(await agents({ fresh: true }), target).find((e) => e.sessionId === sessionId) ?? null;
+    },
+
     async status(id, target) {
-      const m = mapEntry(find(await agents(), id, target));
+      const entry = find(await agents(), id, target);
+      const m = !entry && appStarting(target) ? { status: 'active', activeFlags: [] } : mapEntry(entry);
       return { ...m, name: target?.name };
     },
 
@@ -298,6 +367,7 @@ export function claudeBackend({ store, claudePath = 'claude', permissionMode = '
     },
 
     async start({ name, cwd, model, effort, permissionMode: mode, instructions, firstMessage }, { onCreated }) {
+      await ensureLoggedIn();
       const options = { instructions, model, effort, permissionMode: mode ?? permissionMode };
       const args = ['--bg', ...workerOptions(options), '--name', name, firstMessage(null)];
       const out = await cli(args, { cwd });

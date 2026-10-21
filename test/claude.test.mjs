@@ -10,6 +10,7 @@ import { Store } from '../src/state.mjs';
 import { createTools, ToolError } from '../src/tools.mjs';
 
 const GB = 1024 ** 3;
+const idleCpus = () => [{ times: { user: 0, nice: 0, sys: 0, idle: 0, irq: 0 } }];
 const SID = '11111111-2222-4333-8444-555555555555';
 
 // Stand-in for the `claude` CLI, shaped after code.claude.com/docs/en/agent-view.
@@ -23,6 +24,7 @@ class FakeClaude {
 
   run = async (path, args, opts = {}) => {
     this.calls.push({ args, cwd: opts.cwd });
+    if (args[0] === 'auth') return { code: 0, stdout: JSON.stringify({ loggedIn: this.loggedIn ?? true, authMethod: 'claude.ai' }), stderr: '' };
     if (this.failNext) {
       const f = this.failNext;
       this.failNext = null;
@@ -74,7 +76,9 @@ class FakeClaude {
 let fake, store, tools, clock, backend;
 const calls = (first) => fake.calls.filter((c) => c.args[0] === first);
 
-function setup(config = {}) {
+// env: what the manager's MCP server sees (the desktop app sets
+// CLAUDE_CODE_ENTRYPOINT=claude-desktop; a terminal does not).
+function setup(config = {}, env = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'csm-claude-'));
   writeFileSync(join(dir, 'config.json'), JSON.stringify({ pollSec: 1, watchIntervalMin: 5 / 60, ...config }));
   store = new Store(dir);
@@ -84,7 +88,7 @@ function setup(config = {}) {
   ({ tools } = createTools({
     backend,
     store,
-    sys: { freemem: () => 8 * GB, totalmem: () => 16 * GB, now: () => clock, sleep: async (ms) => (clock += ms) },
+    sys: { freemem: () => 8 * GB, totalmem: () => 16 * GB, now: () => clock, sleep: async (ms) => (clock += ms), env, cpus: idleCpus, inGit: (dir) => !dir.startsWith('/plain') },
   }));
 }
 
@@ -560,4 +564,235 @@ test('worker role exposes only report', () => {
   const only = toolsForRole(tools, 'worker');
   assert.deepEqual(Object.keys(only), ['report']);
   assert.ok(Object.keys(toolsForRole(tools, undefined)).length > 5);
+});
+
+const DESKTOP = { CLAUDE_CODE_ENTRYPOINT: 'claude-desktop' };
+const APP_ID = 'local_0b5e1d2c-3f4a-4b5c-8d6e-7f8091a2b3c4';
+const APP_SID = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+
+// The app session's row in `claude agents --json`.
+const appRow = (sessionId, name, at = 1000, status = 'busy') =>
+  fake.sessions.push({ pid: 9, cwd: '/repo/.claude/worktrees/x', kind: 'interactive', startedAt: clock + at, sessionId, name, status });
+
+// What the manager does with start_session's answer in the desktop app.
+async function startInApp(name, extra = {}) {
+  const r = await tools.start_session.handler({ name, cwd: '/repo', prompt: 'やること', ...extra });
+  await tools.update_session.handler({ threadId: APP_ID, ...r.record });
+  return r;
+}
+
+test('in the desktop app, start_session returns what to pass to the app instead of running claude --bg', async () => {
+  setup({}, DESKTOP);
+  const u = await tools.get_usage.handler({});
+  assert.equal(u.launcher, 'app');
+  const r = await tools.start_session.handler({ name: '画面の確認', cwd: '/repo', prompt: 'やること', profile: 'implement', area: 'ui' });
+  assert.equal(r.started, false);
+  assert.equal(r.startInApp, true);
+  assert.equal(calls('--bg').length, 0);
+  const a = r.appStart;
+  assert.equal(a.initiation, 'user_asked');
+  assert.equal(a.context, 'fresh');
+  assert.equal(a.title, '画面の確認');
+  assert.equal(a.use_worktree, true);
+  assert.equal(a.cwd, '/repo');
+  assert.equal(a.model, 'opus');
+  assert.equal(a.effort, 'medium');
+  assert.equal(a.permission_mode, 'acceptEdits');
+  assert.match(a.prompt, /この会話の名前: 画面の確認\n/);
+  assert.match(a.prompt, /やること$/);
+  assert.match(a.background, /report/);
+  assert.match(a.background, /400 字/);
+  assert.ok(a.background.length >= 80, 'the app needs at least 80 characters of background');
+  assert.deepEqual(r.record, { name: '画面の確認', status: 'running', via: 'app', cwd: '/repo', area: 'ui', profile: 'implement', model: 'opus', effort: 'medium' });
+  assert.match(r.next, /set_pinned/);
+  // A folder outside git gets no worktree.
+  const plain = await tools.start_session.handler({ name: '調べもの', cwd: '/plain/notes', prompt: 'p' });
+  assert.equal(plain.appStart.use_worktree, false);
+  // The guard still applies, and via="bg" keeps the old way.
+  const bg = await tools.start_session.handler({ name: '別', cwd: '/repo', prompt: 'p', via: 'bg' });
+  assert.equal(bg.started, true);
+  assert.equal(calls('--bg').length, 1);
+});
+
+test('an app session is watched through its interactive row, found by title until a report gives its ID', async () => {
+  setup({}, DESKTOP);
+  await startInApp('試し');
+  const t = store.state().targets[APP_ID];
+  assert.equal(t.via, 'app');
+  assert.deepEqual(t.lastSeen, { status: 'active', activeFlags: [] });
+  // Not listed yet: still starting.
+  assert.equal((await backend.status(APP_ID, t)).status, 'active');
+  fake.sessions.push({ pid: 9, cwd: '/repo/.claude/worktrees/x', kind: 'interactive', startedAt: clock + 1000, sessionId: APP_SID, name: '試し', status: 'busy' });
+  clock += 10_000;
+  assert.equal((await backend.status(APP_ID, store.state().targets[APP_ID])).status, 'active');
+  assert.equal(store.state().targets[APP_ID].sessionId, undefined, 'a title alone does not bind');
+  // Once a report gives the ID, a rename in the app does not lose it.
+  const worker = createTools({ backend, store, sys: { env: { CLAUDE_CODE_SESSION_ID: APP_SID } } }).tools;
+  await worker.report.handler({ kind: 'progress', text: '途中', from: '試し' });
+  await tools.read_reports.handler({});
+  fake.set(APP_SID, { name: '別の題名', status: 'idle' });
+  const r = await tools.wait_events.handler({});
+  assert.deepEqual(r.events.map((e) => [e.type, e.from, e.to]), [['status', 'active', 'idle']]);
+  const listed = (await tools.list_sessions.handler({})).sessions[0];
+  assert.equal(listed.via, 'app');
+  assert.equal(listed.status, 'idle');
+});
+
+test('an app session that never shows up is notLoaded once the start grace is over', async () => {
+  setup({}, DESKTOP);
+  await startInApp('消えた');
+  clock += 4 * 60 * 1000;
+  assert.equal((await backend.status(APP_ID, store.state().targets[APP_ID])).status, 'notLoaded');
+});
+
+test("an app worker's report carries its session ID, which links the record", async () => {
+  setup({}, DESKTOP);
+  await startInApp('報告する');
+  appRow(APP_SID, '報告する');
+  // The worker's own server (the plugin's) runs with its session's ID.
+  const worker = createTools({ backend, store, sys: { env: { CLAUDE_CODE_SESSION_ID: APP_SID } } }).tools;
+  await worker.report.handler({ kind: 'progress', text: '途中', from: '報告する' });
+  const r = await tools.wait_events.handler({});
+  const rep = r.events.find((e) => e.type === 'report');
+  assert.equal(rep.threadId, APP_ID);
+  assert.equal(rep.sessionId, APP_SID);
+  assert.equal(store.state().targets[APP_ID].sessionId, APP_SID);
+});
+
+test('app sessions are read, messaged and stopped with the app tools; renaming keeps the old name', async () => {
+  setup({}, DESKTOP);
+  await startInApp('app の会話');
+  await assert.rejects(tools.read_session.handler({ threadId: APP_ID }), (e) => e instanceof ToolError && /list_events/.test(e.message));
+  await assert.rejects(tools.send_message.handler({ threadId: APP_ID, message: 'x' }), (e) => e instanceof ToolError && /SendMessage/.test(e.message));
+  await assert.rejects(tools.stop_session.handler({ threadId: APP_ID }), (e) => e instanceof ToolError && /stop_session/.test(e.message));
+  assert.equal(calls('--resume').length + calls('stop').length + calls('logs').length, 0);
+  const n = await tools.set_session_name.handler({ threadId: APP_ID, name: '新' });
+  assert.match(n.note, /set_session_title/);
+  assert.deepEqual(store.state().targets[APP_ID].aliases, ['app の会話']);
+});
+
+test('claude --bg is refused with a clear reason when the CLI is not logged in', async () => {
+  fake.loggedIn = false;
+  await assert.rejects(tools.start_session.handler({ name: 'x', cwd: '/r', prompt: 'p' }), (e) => e instanceof ToolError && /ログインしていない/.test(e.message) && /via="app"/.test(e.message));
+  assert.equal(calls('--bg').length, 0);
+});
+
+test('two sessions with the title: the newest is watched until a report says which one it is', async () => {
+  setup({}, DESKTOP);
+  await startInApp('同名');
+  for (const [sid, at] of [[APP_SID, 1000], ['bbbbbbbb-bbbb-4ccc-8ddd-eeeeeeeeeeee', 2000]])
+    fake.sessions.push({ pid: 9, cwd: '/x', kind: 'interactive', startedAt: clock + at, sessionId: sid, name: '同名', status: 'busy' });
+  clock += 10_000;
+  assert.equal((await backend.status(APP_ID, store.state().targets[APP_ID])).status, 'active');
+  assert.equal(store.state().targets[APP_ID].sessionId, undefined);
+  // read_reports binds too.
+  const worker = createTools({ backend, store, sys: { env: { CLAUDE_CODE_SESSION_ID: APP_SID } } }).tools;
+  await worker.report.handler({ kind: 'done', text: '済み', from: '同名' });
+  await tools.read_reports.handler({});
+  assert.equal(store.state().targets[APP_ID].sessionId, APP_SID);
+});
+
+test('a resume is refused with a clear reason when the CLI is not logged in', async () => {
+  await tools.start_session.handler({ name: 'r', cwd: '/r', prompt: 'p' });
+  fake.set(SID, { state: 'done', status: 'idle' });
+  fake.loggedIn = false;
+  clock += 10_000;
+  await assert.rejects(tools.send_message.handler({ threadId: SID, message: '続き' }), (e) => e instanceof ToolError && /ログインしていない/.test(e.message));
+  assert.equal(calls('--resume').length, 0);
+});
+
+test('in the desktop app, a usage.json left over from the terminal does not hold back starts', async () => {
+  setup({ pauseAtPct: 50 }, DESKTOP);
+  writeFileSync(join(store.dir, 'usage.json'), JSON.stringify({ updatedAt: new Date(clock).toISOString(), rate_limits: { five_hour: { used_percentage: 99, resets_at: clock / 1000 + 3600 } } }));
+  const u = await tools.get_usage.handler({});
+  assert.equal(u.pauseAtPct, null);
+  assert.equal(u.canStartNew, true);
+  assert.equal((await tools.start_session.handler({ name: 'a', cwd: '/r', prompt: 'p' })).startInApp, true);
+  // A terminal launch still honours it.
+  const bg = await tools.start_session.handler({ name: 'b', cwd: '/r', prompt: 'p', via: 'bg' });
+  assert.equal(bg.started, false);
+  assert.match(bg.reasons[0], /99%/);
+});
+
+test('a report under a bound name from another session does not move the binding', async () => {
+  setup({}, DESKTOP);
+  await startInApp('結びつけ');
+  appRow(APP_SID, '結びつけ');
+  appRow('cccccccc-bbbb-4ccc-8ddd-eeeeeeeeeeee', '結びつけ', 2000);
+  const as = (sid) => createTools({ backend, store, sys: { env: { CLAUDE_CODE_SESSION_ID: sid } } }).tools;
+  await as(APP_SID).report.handler({ kind: 'progress', text: '本物', from: '結びつけ' });
+  await tools.read_reports.handler({});
+  await as('cccccccc-bbbb-4ccc-8ddd-eeeeeeeeeeee').report.handler({ kind: 'progress', text: '別の会話', from: '結びつけ' });
+  await tools.read_reports.handler({});
+  assert.equal(store.state().targets[APP_ID].sessionId, APP_SID);
+});
+
+test('a report from an older session of the same name does not claim a new app record', async () => {
+  setup({}, DESKTOP);
+  appRow('dddddddd-bbbb-4ccc-8ddd-eeeeeeeeeeee', '再起動', -10 * 60 * 1000, 'idle');
+  await startInApp('再起動');
+  const old = createTools({ backend, store, sys: { env: { CLAUDE_CODE_SESSION_ID: 'dddddddd-bbbb-4ccc-8ddd-eeeeeeeeeeee' } } }).tools;
+  await old.report.handler({ kind: 'done', text: '古い', from: '再起動' });
+  await tools.read_reports.handler({});
+  assert.equal(store.state().targets[APP_ID].sessionId, undefined);
+});
+
+test('a bound app session that is no longer listed is not replaced by another session of its title', async () => {
+  setup({}, DESKTOP);
+  await startInApp('消える');
+  store.updateTarget(APP_ID, { sessionId: APP_SID });
+  appRow('eeeeeeee-bbbb-4ccc-8ddd-eeeeeeeeeeee', '消える', 2000);
+  clock += 4 * 60 * 1000;
+  assert.equal((await backend.status(APP_ID, store.state().targets[APP_ID])).status, 'notLoaded');
+});
+
+test('in the desktop app, background workers keep the usage watch', async () => {
+  setup({ pauseAtPct: 50 }, DESKTOP);
+  writeFileSync(join(store.dir, 'usage.json'), JSON.stringify({ updatedAt: new Date(clock).toISOString(), rate_limits: { five_hour: { used_percentage: 70, resets_at: clock / 1000 + 3600 } } }));
+  // Refused by the usage: the result says how it was to start.
+  const refused = await tools.start_session.handler({ name: 'bg', cwd: '/r', prompt: 'p', via: 'bg' });
+  assert.equal(refused.via, 'bg');
+  await tools.update_session.handler({ threadId: 'wait:bg', name: 'bg', status: 'pending', waitForRoom: true, via: 'bg' });
+  await tools.update_session.handler({ threadId: 'wait:app', name: 'app', status: 'pending', waitForRoom: true, via: 'app' });
+  const r = await tools.wait_events.handler({});
+  assert.deepEqual(r.events.map((e) => [e.type, e.names ?? null]), [['usageHigh', null], ['roomAvailable', ['app']]]);
+});
+
+test('in the desktop app, usageHigh names only the background sessions to stop', async () => {
+  setup({ pauseAtPct: 50 }, DESKTOP);
+  writeFileSync(join(store.dir, 'usage.json'), JSON.stringify({ updatedAt: new Date(clock).toISOString(), rate_limits: { five_hour: { used_percentage: 70, resets_at: clock / 1000 + 3600 } } }));
+  await startInApp('app 側');
+  store.updateTarget(SID, { name: 'bg 側', status: 'running', sessionId: SID });
+  fake.sessions.push({ id: 'b0', sessionId: SID, name: 'bg 側', kind: 'background', state: 'working', status: 'busy', pid: 1, startedAt: clock });
+  const r = await tools.wait_events.handler({});
+  const high = r.events.find((e) => e.type === 'usageHigh');
+  assert.deepEqual(high.threadIds, [SID]);
+});
+
+test('a report is not lost when the session list cannot be read while binding', async () => {
+  setup({}, DESKTOP);
+  await startInApp('読めない');
+  const worker = createTools({ backend, store, sys: { env: { CLAUDE_CODE_SESSION_ID: APP_SID } } }).tools;
+  await worker.report.handler({ kind: 'question', text: 'どちらに？', from: '読めない' });
+  fake.failNext = 'agents: temporary failure';
+  const first = await tools.read_reports.handler({});
+  assert.deepEqual(first.reports.map((r) => r.text), ['どちらに？']);
+  assert.equal(store.state().targets[APP_ID].sessionId, undefined);
+  assert.equal(store.hasUnreadReports(), false);
+});
+
+test('a bound app session that goes on under a new session ID is followed by its process', async () => {
+  setup({}, DESKTOP);
+  await startInApp('続く');
+  appRow(APP_SID, '続く');
+  const worker = createTools({ backend, store, sys: { env: { CLAUDE_CODE_SESSION_ID: APP_SID } } }).tools;
+  await worker.report.handler({ kind: 'progress', text: '途中', from: '続く' });
+  await tools.read_reports.handler({});
+  assert.equal(store.state().targets[APP_ID].pid, 9);
+  // Same process, new session ID.
+  const NEW = 'ffffffff-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+  fake.set(APP_SID, { sessionId: NEW, status: 'idle' });
+  clock += 10_000;
+  assert.equal((await backend.status(APP_ID, store.state().targets[APP_ID])).status, 'idle');
+  assert.equal(store.state().targets[APP_ID].sessionId, NEW);
 });

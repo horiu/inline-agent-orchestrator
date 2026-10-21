@@ -10,6 +10,7 @@
   },
   "files": [
     "src",
+    "hooks",
     "skills",
     "AGENTS.snippet.md",
     "config.example.json"

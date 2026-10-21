@@ -14,8 +14,11 @@ export const DEFAULT_CONFIG = {
     path: 'claude',
     permissionMode: 'acceptEdits',
   },
-  maxRunning: 3,
+  // No cap on the number of running sessions: a new one starts while the PC
+  // has room (free memory, and CPU when maxCpuPct is a number; null turns the
+  // CPU check off).
   minFreeMemGb: 2,
+  maxCpuPct: 90,
   // Usage (%) at which the manager starts nothing new and stops the running
   // sessions, per agent; null never stops for usage. Off for Claude Code: it
   // continues a session by itself when the limit resets, and stopping is no
