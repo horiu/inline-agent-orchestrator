@@ -211,6 +211,8 @@ Claude のデスクトップアプリ（Code タブ）でオーケストレー�
 | `profiles` | 下記 | 作業の種類ごとのモデルとエフォート |
 | `defaults.model` / `defaults.effort` | — | プロファイルを使わないときのモデルとエフォート（省略時は各ツールの既定値） |
 
+0.9.1 までの `config.example.json` を写した `config.json` には `"permissionMode": "acceptEdits"` が残っており、Claude のデスクトップアプリでも作業セッションが `acceptEdits` で動きます。オーケストレーターと同じモードにする場合は、その行を消すか `null` に書き換えてください。
+
 同時に実行する数の上限（以前の `maxRunning`）はなくなりました。`config.json` に残っていても無視します。
 
 <details>

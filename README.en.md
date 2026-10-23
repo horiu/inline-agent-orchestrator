@@ -213,6 +213,8 @@ You can also point to another location with the `CSM_HOME` environment variable.
 | `profiles` | See below | Model and effort for each kind of task |
 | `defaults.model` / `defaults.effort` | — | Model and effort when no profile is used (each tool's default when omitted) |
 
+A `config.json` copied from `config.example.json` of 0.9.1 or earlier still has `"permissionMode": "acceptEdits"`, so worker sessions run in `acceptEdits` in the Claude desktop app too. To give them the orchestrator's own mode, remove that line or change it to `null`.
+
 The cap on the number of running sessions (the former `maxRunning`) is gone. It is ignored if it is still in `config.json`.
 
 <details>
