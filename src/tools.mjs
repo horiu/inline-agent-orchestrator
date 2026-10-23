@@ -551,7 +551,8 @@ export function createTools({ backend, client, store, sys = {} }) {
           permissionMode: {
             type: 'string',
             enum: ['default', 'acceptEdits', 'plan', 'auto', 'dontAsk', 'bypassPermissions'],
-            description: 'Claude Code だけ',
+            description:
+              'Claude Code だけ。省略時は config.json の claude.permissionMode、それも無ければ Claude のデスクトップアプリでは監視役と同じ権限モード（監視役より上は断られる）、ターミナル（claude --bg）では acceptEdits。監視役と同じでよければ省く',
           },
           area: { type: 'string', description: '触る場所の一言（ファイル・画面・機能）。思いつきの振り分けに使う' },
           via: {
