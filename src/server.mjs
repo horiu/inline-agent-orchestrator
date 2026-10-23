@@ -12,7 +12,7 @@ import { refreshStatuslineCopy } from './setup.mjs';
 import { createTools, ToolError } from './tools.mjs';
 import { versionInfo } from './version.mjs';
 
-export const SERVER_INFO = { name: 'inline-agent-orchestrator', version: '0.9.1' };
+export const SERVER_INFO = { name: 'inline-agent-orchestrator', version: '0.9.2' };
 
 // Worker conversations (CSM_ROLE=worker) see only `report`.
 export function toolsForRole(tools, role) {

@@ -3,7 +3,7 @@
   "transport": "daemon",
   "claude": {
     "path": "claude",
-    "permissionMode": "acceptEdits"
+    "permissionMode": null
   },
   "minFreeMemGb": 2,
   "maxCpuPct": 90,

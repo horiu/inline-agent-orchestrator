@@ -1,6 +1,6 @@
 {
   "name": "inline-agent-orchestrator",
-  "version": "0.9.1",
+  "version": "0.9.2",
   "description": "Turn your everyday Claude Code or Codex session into an orchestrator that starts, monitors and steers other sessions.",
   "license": "MIT",
   "type": "module",

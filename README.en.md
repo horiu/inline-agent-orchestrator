@@ -7,7 +7,7 @@ English | [日本語](README.md)
 When you run several tasks in parallel with Claude Code or Codex, do you end up opening session after session and checking on each one in turn? Inline Agent Orchestrator turns the chat you already use into the coordinator. It starts a session for each task, keeps an eye on their progress, and comes back to you only with the decisions that need you, all at once. The screens and controls stay the same Claude Code and Codex you know.
 
 > [!NOTE]
-> This is a prototype (v0.9.1). The unit tests pass, but it has not yet been verified against real Claude Code or Codex sessions. Please run through [Verification](#verification) before relying on it.
+> This is a prototype (v0.9.2). The unit tests pass, but it has not yet been verified against real Claude Code or Codex sessions. Please run through [Verification](#verification) before relying on it.
 >
 > Messages from the tools and the skill's instructions are currently written in Japanese. The model still understands and answers in your language.
 
@@ -139,7 +139,7 @@ Because of how the notices work, some things arrive late:
 | Waiting for an approval or input | The Claude desktop app notifies you itself |
 | TODO conditions such as a date or a merged PR | When the orchestrator runs (when you type, or on a notice) |
 
-The pattern of the orchestrator ending its turn and running on worker sessions' notices was tried by running a 0.8.0 orchestrator that way in the Claude desktop app for a day. What 0.9.0 adds — `wait: false` on `wait_events`, TODOs and the list command — is covered by unit tests only and has not yet been tried in the real Claude desktop app ([Verification](#verification), D2–D5).
+The pattern of the orchestrator ending its turn and running on worker sessions' notices was tried by running a 0.8.0 orchestrator that way in the Claude desktop app for a day. What 0.9.0 adds — `wait: false` on `wait_events`, TODOs and the list command — is covered by unit tests only and has not yet been tried in the real Claude desktop app ([Verification](#verification), D2–D5). The same goes for inheriting the permission mode in 0.9.2 (D6).
 
 A late progress report does not hold up the work; the worker session keeps going. To check on things sooner, talk to the orchestrator or open the worker session. `claude --bg` sessions and sessions started by an earlier orchestrator send no notices, so they are checked only when you type.
 
@@ -220,7 +220,7 @@ The cap on the number of running sessions (the former `maxRunning`) is gone. It 
 
 | Key | Default | Description |
 | --- | --- | --- |
-| `claude.permissionMode` | `"acceptEdits"` | Permission mode for Claude Code worker sessions (`default`, `acceptEdits`, `plan`, `auto`, `dontAsk`, `bypassPermissions`). With `acceptEdits`, file edits run without confirmation, while commands and similar actions wait for approval |
+| `claude.permissionMode` | `null` | Permission mode for Claude Code worker sessions (`default`, `acceptEdits`, `plan`, `auto`, `dontAsk`, `bypassPermissions`). With `null`, a worker in the Claude desktop app gets the orchestrator's own mode (the desktop app does not start one above it), and a worker in the terminal (`claude --bg`) gets `acceptEdits`. With `acceptEdits`, file edits run without confirmation, while commands and similar actions wait for approval |
 | `claude.path` | `"claude"` | Path to the Claude Code CLI. It is launched without a shell, so specify `claude.exe` or an array rather than a `.cmd` file |
 | `defaults.sandbox` | `"workspace-write"` | Sandbox for Codex worker sessions |
 | `defaults.approvalPolicy` | `"never"` | Approval policy for Codex worker sessions. With `never`, sessions never stop to wait for approval (actions outside the sandbox fail, and the AI looks for another way) |
@@ -423,7 +423,7 @@ Every call follows the official documentation (for Codex, `learn.chatgpt.com/doc
 
 ## Limitations
 
-- **It does not approve on your behalf** — When a worker session is waiting for approval or input, the orchestrator only tells you how to open it. With Claude Code's default (`acceptEdits`), running commands waits for confirmation
+- **It does not approve on your behalf** — When a worker session is waiting for approval or input, the orchestrator only tells you how to open it. Claude Code worker sessions run in the orchestrator's own permission mode in the Claude desktop app, and in `acceptEdits` in the terminal (running commands waits for confirmation)
 - **In Claude Code in the terminal and in Codex, monitoring happens within the orchestrator's turn** — What you type while it monitors is not read for up to `watchIntervalMin` minutes (stop it with the stop button and it is read at once). When no sessions are running, or nothing can move forward for long, monitoring ends and resumes the next time you talk to the orchestrator
 - **In the Claude desktop app, progress reports arrive late** — A progress report arrives when the worker session ends its turn, and while several worker sessions run, when none is running any more ([Using the Claude desktop app](#using-the-claude-desktop-app))
 - **Nothing runs on a timer** — TODOs that wait for a date or a merged PR are checked when the orchestrator runs (when you type, on a notice, while monitoring)
@@ -458,7 +458,7 @@ Cleanup: `claude stop <ID>`, `claude rm <ID>`, `update_session` (remove)
 </details>
 
 <details>
-<summary>Claude desktop app (D1–D5)</summary>
+<summary>Claude desktop app (D1–D6)</summary>
 
 | # | Check | Steps | If it fails |
 | --- | --- | --- | --- |
@@ -467,6 +467,7 @@ Cleanup: `claude stop <ID>`, `claude rm <ID>`, `update_session` (remove)
 | D3 | Notice and report | When 'trial' finishes, does a notice wake the orchestrator, does `wait_events` (`wait: false`) receive the `report` (done), and is the pin removed? Does `list_sessions` show 'trial' as `idle`? | Check that `claude agents --json` has a row for 'trial' (kind `interactive`) |
 | D4 | The next task | Ask for another task → does a new worker session start? | If the desktop app refuses the start, check that a suggestion card appears and a TODO is kept |
 | D5 | TODOs and the list | Say "fix the README typo later, any time is fine" → is it kept as a TODO? In another chat, `/inline-agent-orchestrator:status` → do the tables of worker sessions and TODOs appear? "Start number 1" → does a worker session start, and is the TODO done when it finishes? | Check `todos` in `~/.claude/session-manager-mcp/state.json` |
+| D6 | Inheriting the permission mode | Put the orchestrator in auto mode (`auto`) and start a worker session → does the worker also run in auto mode, without a confirmation for each command? (`claude.permissionMode` in `config.json` unset or `null`) | Check that `appStart` from `start_session` has no `permission_mode` |
 
 Cleanup: archive the session in the desktop app, `update_session` (remove)
 
@@ -502,7 +503,7 @@ Cleanup: `codex archive <ID>`, `update_session` (remove), and `codex app-server 
 
 The following information helps track down the cause.
 
-- The step that failed (C1–C6, D1–D5, V1–V5) and the output of `claude --version` or `codex --version`, and `node --version`
+- The step that failed (C1–C6, D1–D6, V1–V5) and the output of `claude --version` or `codex --version`, and `node --version`
 - The error message, or the full output of the command
 - `state.json`, `reports.jsonl`, and `config.json` from the data folder; for Claude Code, also `worker-mcp.json`, `usage.json`, and `statusline.json`
 - For Claude Code, the output of `claude plugin list` run in a terminal; for Codex, the `[mcp_servers.session-manager]` section of `config.toml`

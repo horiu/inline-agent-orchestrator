@@ -92,7 +92,9 @@ function mapEntry(e) {
 }
 
 // claudePath: "claude" / an absolute path to claude(.exe), or an argv prefix.
-export function claudeBackend({ store, claudePath = 'claude', permissionMode = 'acceptEdits', run = runCli, now = () => Date.now() }) {
+export function claudeBackend({ store, claudePath = 'claude', permissionMode, run = runCli, now = () => Date.now() }) {
+  // claude --bg cannot read the manager's mode, so it has a mode of its own.
+  permissionMode ??= 'acceptEdits';
   let cache = null;
   let ticking = false;
 

@@ -593,6 +593,8 @@ export function createTools({ backend, client, store, sys = {} }) {
         const useEffort = run.effort ?? d.effort ?? null;
         if ((via ?? launcher) === 'app') {
           // The manager starts it with the app's tool and then records it.
+          // Without a mode the app gives the worker the manager's own.
+          const mode = permissionMode ?? cfg.claude?.permissionMode;
           const appStart = {
             initiation: 'user_asked',
             context: 'fresh',
@@ -602,7 +604,7 @@ export function createTools({ backend, client, store, sys = {} }) {
             // A worktree needs a git repository; other folders are used as they are.
             use_worktree: inGit(cwd),
             cwd,
-            permission_mode: permissionMode ?? cfg.claude?.permissionMode,
+            ...(mode ? { permission_mode: mode } : {}),
             ...(useModel ? { model: useModel } : {}),
             ...(useEffort ? { effort: useEffort } : {}),
           };

@@ -12,7 +12,10 @@ export const DEFAULT_CONFIG = {
   transport: 'daemon',
   claude: {
     path: 'claude',
-    permissionMode: 'acceptEdits',
+    // null: a worker in the Claude desktop app takes the manager's mode (the
+    // app refuses a mode above it); claude --bg cannot read it and uses
+    // acceptEdits.
+    permissionMode: null,
   },
   // No cap on the number of running sessions: a new one starts while the PC
   // has room (free memory, and CPU when maxCpuPct is a number; null turns the
