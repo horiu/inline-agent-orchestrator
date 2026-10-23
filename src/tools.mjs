@@ -551,7 +551,8 @@ export function createTools({ backend, client, store, sys = {} }) {
           permissionMode: {
             type: 'string',
             enum: ['default', 'acceptEdits', 'plan', 'auto', 'dontAsk', 'bypassPermissions'],
-            description: 'Claude Code だけ',
+            description:
+              'Claude Code だけ。省略時は config.json の claude.permissionMode、それも無ければ Claude のデスクトップアプリでは監視役と同じ権限モード（監視役より上は断られる）、ターミナル（claude --bg）では acceptEdits。監視役と同じでよければ省く',
           },
           area: { type: 'string', description: '触る場所の一言（ファイル・画面・機能）。思いつきの振り分けに使う' },
           via: {
@@ -593,6 +594,8 @@ export function createTools({ backend, client, store, sys = {} }) {
         const useEffort = run.effort ?? d.effort ?? null;
         if ((via ?? launcher) === 'app') {
           // The manager starts it with the app's tool and then records it.
+          // Without a mode the app gives the worker the manager's own.
+          const mode = permissionMode ?? cfg.claude?.permissionMode;
           const appStart = {
             initiation: 'user_asked',
             context: 'fresh',
@@ -602,7 +605,7 @@ export function createTools({ backend, client, store, sys = {} }) {
             // A worktree needs a git repository; other folders are used as they are.
             use_worktree: inGit(cwd),
             cwd,
-            permission_mode: permissionMode ?? cfg.claude?.permissionMode,
+            ...(mode ? { permission_mode: mode } : {}),
             ...(useModel ? { model: useModel } : {}),
             ...(useEffort ? { effort: useEffort } : {}),
           };

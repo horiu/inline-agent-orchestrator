@@ -95,7 +95,7 @@ Claude Code の作業の会話は、監視役が Claude のデスクトップア
 
 `session-manager` の `start_session` はデスクトップアプリの会話を起こせないので、起こさずに `appStart`（デスクトップアプリに渡す値）と `record`（記録の値）を返す。続けて:
 
-1. `mcp__ccd_session__start_session` を `appStart` の値で呼ぶ。`cwd` が監視役と同じフォルダなら `cwd` を省く。`permission_mode`・`model`・`effort` が断られたら（監視役の自分より上の権限モード・モデル・エフォートは使えない）、断られた値を省いて呼び直す（省くと監視役と同じになる）
+1. `mcp__ccd_session__start_session` を `appStart` の値で呼ぶ。`cwd` が監視役と同じフォルダなら `cwd` を省く。`appStart` に `permission_mode` が無ければ、作業の会話は監視役と同じ権限モードになる（`config.json` か `start_session` で指定したときだけ入る）。`permission_mode`・`model`・`effort` が断られたら（監視役の自分より上の権限モード・モデル・エフォートは使えない）、断られた値を省いて呼び直す（省くと監視役と同じになる）
 2. 返った session id（`local_…`）を threadId にして、`update_session` を `record` の値で呼ぶ（管理に加わり、見回りの対象になる。`record` に `todo` があれば、その TODO とつながる）
 3. `mcp__ccd_sidebar__set_pinned`（1. の 2 で読み込み済み。session_id にその id、pinned true）でピン止めする。`done` にしたとき（報告が無くても）と、管理から外したとき（remove）に、pinned false で外す
 4. 利用者へ一言: 名前と、開くリンク `[名前](#local_…)`

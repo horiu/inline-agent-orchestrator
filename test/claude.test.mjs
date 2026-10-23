@@ -597,7 +597,7 @@ test('in the desktop app, start_session returns what to pass to the app instead 
   assert.equal(a.cwd, '/repo');
   assert.equal(a.model, 'opus');
   assert.equal(a.effort, 'medium');
-  assert.equal(a.permission_mode, 'acceptEdits');
+  assert.ok(!('permission_mode' in a), "the app gives the worker the manager's mode");
   assert.match(a.prompt, /この会話の名前: 画面の確認\n/);
   assert.match(a.prompt, /やること$/);
   assert.match(a.background, /report/);
@@ -612,6 +612,20 @@ test('in the desktop app, start_session returns what to pass to the app instead 
   const bg = await tools.start_session.handler({ name: '別', cwd: '/repo', prompt: 'p', via: 'bg' });
   assert.equal(bg.started, true);
   assert.equal(calls('--bg').length, 1);
+});
+
+test('in the desktop app, a permission mode is passed only when given; claude --bg falls back to acceptEdits', async () => {
+  setup({}, DESKTOP);
+  const given = await tools.start_session.handler({ name: 'a', cwd: '/repo', prompt: 'p', permissionMode: 'plan' });
+  assert.equal(given.appStart.permission_mode, 'plan');
+  await tools.start_session.handler({ name: 'b', cwd: '/repo', prompt: 'p', via: 'bg' });
+  const { args } = calls('--bg')[0];
+  assert.equal(args[args.indexOf('--permission-mode') + 1], 'acceptEdits');
+  setup({ claude: { permissionMode: 'auto' } }, DESKTOP);
+  const configured = await tools.start_session.handler({ name: 'c', cwd: '/repo', prompt: 'p' });
+  assert.equal(configured.appStart.permission_mode, 'auto');
+  const over = await tools.start_session.handler({ name: 'd', cwd: '/repo', prompt: 'p', permissionMode: 'default' });
+  assert.equal(over.appStart.permission_mode, 'default');
 });
 
 test('an app session is watched through its interactive row, found by title until a report gives its ID', async () => {

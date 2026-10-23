@@ -7,7 +7,7 @@
 Claude Code や Codex で作業を並行して進めるとき、セッションをいくつも開いて、1つずつ様子を見て回っていませんか。Inline Agent Orchestrator を入れると、いつものチャットがまとめ役になります。作業ごとにセッションを立ち上げて進み具合を見守り、判断が必要なことだけをまとめて聞いてきます。画面も操作も、いつもの Claude Code・Codex のままです。
 
 > [!NOTE]
-> 試作版（v0.9.1）です。単体テストは通過していますが、実際の Claude Code・Codex での動作検証はまだ行っていません。ご利用の前に「[動作確認](#動作確認)」の手順をお試しください。
+> 試作版（v0.9.2）です。単体テストは通過していますが、実際の Claude Code・Codex での動作検証はまだ行っていません。ご利用の前に「[動作確認](#動作確認)」の手順をお試しください。
 
 ## 特長
 
@@ -137,7 +137,7 @@ Claude のデスクトップアプリ（Code タブ）でオーケストレー�
 | 承認・入力の待ち | Claude のデスクトップアプリ自身が通知します |
 | 日時・PR のマージなどの TODO の条件 | オーケストレーターが動いたとき（話しかけたとき・知らせのとき） |
 
-オーケストレーターがターンを終え、作業セッションの知らせで動く形は、0.8.0 のオーケストレーターを手順どおりに動かして、Claude のデスクトップアプリで一日使って確かめました。0.9.0 で足した `wait_events` の `wait: false`・TODO・一覧のコマンドは単体テストだけで、実際の Claude のデスクトップアプリではまだ確かめていません（[動作確認](#動作確認)の D2〜D5）。
+オーケストレーターがターンを終え、作業セッションの知らせで動く形は、0.8.0 のオーケストレーターを手順どおりに動かして、Claude のデスクトップアプリで一日使って確かめました。0.9.0 で足した `wait_events` の `wait: false`・TODO・一覧のコマンドは単体テストだけで、実際の Claude のデスクトップアプリではまだ確かめていません（[動作確認](#動作確認)の D2〜D5）。0.9.2 の権限モードの引き継ぎも同じです（D6）。
 
 途中の報告が遅れても、作業セッションは止まらずに進みます。急ぎで様子を見たいときは、オーケストレーターに話しかけるか、作業セッションを開いてください。`claude --bg` のセッションや、前のオーケストレーターが起動したセッションからは知らせが届かないため、話しかけたときにだけ確認します。
 
@@ -211,6 +211,8 @@ Claude のデスクトップアプリ（Code タブ）でオーケストレー�
 | `profiles` | 下記 | 作業の種類ごとのモデルとエフォート |
 | `defaults.model` / `defaults.effort` | — | プロファイルを使わないときのモデルとエフォート（省略時は各ツールの既定値） |
 
+0.9.1 までの `config.example.json` を写した `config.json` には `"permissionMode": "acceptEdits"` が残っており、Claude のデスクトップアプリでも作業セッションが `acceptEdits` で動きます。オーケストレーターと同じモードにする場合は、その行を消すか `null` に書き換えてください。
+
 同時に実行する数の上限（以前の `maxRunning`）はなくなりました。`config.json` に残っていても無視します。
 
 <details>
@@ -218,7 +220,7 @@ Claude のデスクトップアプリ（Code タブ）でオーケストレー�
 
 | キー | 既定値 | 説明 |
 | --- | --- | --- |
-| `claude.permissionMode` | `"acceptEdits"` | Claude Code の作業セッションの権限モード（`default`・`acceptEdits`・`plan`・`auto`・`dontAsk`・`bypassPermissions`）。`acceptEdits` ではファイルの編集のみ確認なしで実行し、コマンドの実行などは確認待ちになります |
+| `claude.permissionMode` | `null` | Claude Code の作業セッションの権限モード（`default`・`acceptEdits`・`plan`・`auto`・`dontAsk`・`bypassPermissions`）。`null` のとき、Claude のデスクトップアプリではオーケストレーターと同じモードになり（デスクトップアプリはオーケストレーターより上のモードでは起動しません）、ターミナル（`claude --bg`）では `acceptEdits` になります。`acceptEdits` ではファイルの編集のみ確認なしで実行し、コマンドの実行などは確認待ちになります |
 | `claude.path` | `"claude"` | Claude Code CLI のパス。シェルを経由せずに起動するため、`.cmd` ではなく `claude.exe` または配列で指定します |
 | `defaults.sandbox` | `"workspace-write"` | Codex の作業セッションのサンドボックス |
 | `defaults.approvalPolicy` | `"never"` | Codex の作業セッションの承認ポリシー。`never` では承認待ちで止まりません（サンドボックス外の操作は失敗し、AI が別の方法を探します） |
@@ -421,7 +423,7 @@ Claude Code にも Codex にも、AI が別のセッションを操作するた�
 
 ## 制限事項
 
-- **承認の代行はしません** — 作業セッションが承認や入力を待っている場合、オーケストレーターは開き方を案内するだけです。Claude Code の既定（`acceptEdits`）では、コマンドの実行時に確認待ちになります
+- **承認の代行はしません** — 作業セッションが承認や入力を待っている場合、オーケストレーターは開き方を案内するだけです。Claude Code の作業セッションは、Claude のデスクトップアプリではオーケストレーターと同じ権限モード、ターミナルでは `acceptEdits`（コマンドの実行時に確認待ちになります）で動きます
 - **ターミナルの Claude Code と Codex では、監視はオーケストレーターのターン内で行います** — 監視中に入力した文は、最長 `watchIntervalMin` 分読まれません（停止ボタンで止めれば、すぐ読まれます）。実行中のセッションがなくなるか、進められる作業がない状態が続くと監視を終了し、次に話しかけたときに再開します
 - **Claude のデスクトップアプリでは、作業セッションの途中の報告は遅れて届きます** — 途中の報告（progress）は作業セッションがターンを終えたときに、作業セッションを何本も並べたときは動いている作業セッションがなくなったときに届きます（[Claude のデスクトップアプリで使う](#claude-のデスクトップアプリで使う)）
 - **時刻で動く仕組みはありません** — 日時や PR のマージを条件にした TODO は、オーケストレーターが動いたとき（話しかけたとき・知らせのとき・監視のとき）に確かめます
@@ -456,7 +458,7 @@ Claude Code にも Codex にも、AI が別のセッションを操作するた�
 </details>
 
 <details>
-<summary>Claude のデスクトップアプリ（D1〜D3）</summary>
+<summary>Claude のデスクトップアプリ（D1〜D6）</summary>
 
 | # | 確認項目 | 手順 | うまくいかない場合 |
 | --- | --- | --- | --- |
@@ -465,6 +467,7 @@ Claude Code にも Codex にも、AI が別のセッションを操作するた�
 | D3 | 知らせと報告 | 「試し」が終わると、オーケストレーターが知らせで動き、`wait_events`（`wait: false`）で `report`（done）を受け取ってピン留めを外すか。`list_sessions` で「試し」の状態が `idle` になるか | `claude agents --json` に「試し」の行（kind `interactive`）があるか確認する |
 | D4 | 次の作業 | 続けて別の作業を頼む → 新しい作業セッションが起動するか | Claude のデスクトップアプリが起動を断った場合は、提案カードが表示され、TODO に残るか確認する |
 | D5 | TODO と一覧 | 「あとで README の誤字を直す。いつでもいい」と伝える → TODO に残るか。別のチャットで `/inline-agent-orchestrator:status` → 作業セッションと TODO の表が出るか。「1番を始めて」→ 作業セッションが起動し、終わると TODO が済みになるか | `~/.claude/session-manager-mcp/state.json` の `todos` を確認する |
+| D6 | 権限モードの引き継ぎ | オーケストレーターを自動モード（`auto`）にして作業セッションを起こす → 作業セッションも自動モードで動き、コマンドごとの確認が出ないか（`config.json` の `claude.permissionMode` は未設定か `null`） | `start_session` の `appStart` に `permission_mode` が無いか確認する |
 
 後片付け: Claude のデスクトップアプリでセッションをアーカイブ、`update_session`（remove）
 
@@ -500,7 +503,7 @@ Claude Code にも Codex にも、AI が別のセッションを操作するた�
 
 次の情報があると、原因の調査がスムーズです。
 
-- うまくいかなかった手順（C1〜C6、D1〜D5、V1〜V5）と、`claude --version` または `codex --version`、`node --version` の出力
+- うまくいかなかった手順（C1〜C6、D1〜D6、V1〜V5）と、`claude --version` または `codex --version`、`node --version` の出力
 - エラーメッセージ、またはコマンドの出力全体
 - データフォルダ内の `state.json`・`reports.jsonl`・`config.json`。Claude Code の場合は `worker-mcp.json`・`usage.json`・`statusline.json` も
 - Claude Code の場合はターミナルで実行した `claude plugin list` の出力、Codex の場合は `config.toml` の `[mcp_servers.session-manager]` セクション
