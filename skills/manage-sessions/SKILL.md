@@ -1,6 +1,6 @@
 ---
 name: manage-sessions
-description: Make this session an orchestrator that starts, monitors and steers other Claude Code or Codex sessions.
+description: Make this session an orchestrator that starts, monitors and steers other Claude Code, Codex or Devin sessions.
 ---
 
 # manage-sessions — 監視役の会話
@@ -11,7 +11,7 @@ description: Make this session an orchestrator that starts, monitors and steers 
 - Claude のデスクトップアプリの道具（Claude Code を Claude のデスクトップアプリで使うとき。遅延ツールなので 1. の 2・3 で読み込む）: 起こす `mcp__ccd_session__start_session`、カードを取り下げる `mcp__ccd_session__dismiss_task`、送る `SendMessage`、読む `mcp__ccd_session_mgmt__list_events`、止める `mcp__ccd_session_mgmt__stop_session`、一覧 `mcp__ccd_session_mgmt__list_sessions`、利用枠 `mcp__ccd_session_mgmt__get_usage`、ピン止め `mcp__ccd_sidebar__set_pinned`。`session-manager` はこれらを呼べないので、デスクトップアプリの会話を起こす・送る・止める・ピン止めするのは監視役の仕事。`session-manager` は記録・報告・資源の判定・見回り・TODO を受け持つ
 - 記録: 状態のフォルダの `state.json`（道具が書く。管理中の会話・状態・メモ・触る場所・TODO）、`reports.jsonl`（作業の会話からの報告）、`config.json`（下限・上限）、`handoff.md`（監視役が書く引き継ぎメモ。4. の「見回りが止まったとき」）
 - 一覧のコマンド: 利用者は、どの会話からでも `/inline-agent-orchestrator:status` で、管理中の会話・TODO・引き継ぎメモの表を見られる（見回り中の監視役に打っても読まれないため）。利用者に一覧を聞かれたら、この会話でも同じ表で答えてよい
-- 利用者が足す決まり: 状態のフォルダ（Codex は `~/.codex/session-manager/`、Claude Code は `~/.claude/session-manager-mcp/`）の `local-rules.md`（あれば最初に読む。書き方の例はこの Skill の `local-rules.example.md`）。プロジェクトの決まりは各リポジトリの `AGENTS.md`（Codex）・`CLAUDE.md`（Claude Code）
+- 利用者が足す決まり: 状態のフォルダ（Codex は `~/.codex/session-manager/`、Claude Code は `~/.claude/session-manager-mcp/`、Devin は `~/.config/devin/session-manager/`（Windows は `%APPDATA%\devin\session-manager\`））の `local-rules.md`（あれば最初に読む。書き方の例はこの Skill の `local-rules.example.md`）。プロジェクトの決まりは各リポジトリの `AGENTS.md`（Codex・Devin）・`CLAUDE.md`（Claude Code）
 - ことば: この Skill の「デスクトップアプリ」は Claude のデスクトップアプリ（Code タブ）のこと。利用者への文では「アプリ」「app」とだけ書かず、「Claude のデスクトップアプリ」「ターミナルの Claude Code」「Codex」のように、どのアプリケーションかが分かる書き方にする
 
 ## Codex と Claude Code の違い
@@ -34,6 +34,18 @@ Claude Code の作業の会話は、監視役が Claude のデスクトップア
 | 利用枠の上限で止める（既定） | 95% で止め、枠が戻ったら再開を頼む（7.） | 止めない。上限に達したら Claude Code の自動続行に任せ、戻ったら続きを頼む（7.） | 同じ |
 
 監視役の自分の名前は、Codex でも Claude のデスクトップアプリでも変えられる（1. の 2）。Claude のデスクトップアプリでは、監視役の会話もサイドバーにピン止めする（1. の 2。作業の会話と違い、終わっても自分では外さない）。
+
+### Devin の場合
+
+Devin の作業の会話は `devin acp`（Agent Client Protocol）の中のセッションで、監視役が `start_session` で起こす。扱いは「ターミナルの Claude Code」（表の右の列）と同じで、見回りは B（`wait_events` で待つ）の形にする。主な違い:
+
+- 開き方: `devin -r <ID>`（端末でその会話に入る）または `devin list` で一覧。Devin のデスクトップアプリのサイドバーには出ない
+- 起こす: `start_session` だけ（デスクトップアプリ用の段取りは無い）
+- 権限: 作業の会話は `smart` モードで動く（`config.json` の `devin.mode` で変更可）。それでも届いた承認要求は `session-manager` が `devin.permission`（既定 `allow_once`）で返す。返した承認は `needsAttention` として見回りに出る
+- 名前: Devin には会話名を変える API が無いため、`set_session_name` は監視役の記録だけを変える
+- 預かった連絡: 動いている会話へ `send_message` すると、監視役が預かり、ターンが終わったら届ける（`mode="steer"` は Devin の途中送信でそのまま割り込める）
+- 利用枠: ACP にはアカウントの利用枠を読む API が無いため、`pauseAtPct` は効かない（利用枠では止めない）
+- セッションは Devin の記録に残るので、監視プロセスが再起動しても `session/load` で追いかけ直せる
 
 ## 1. 始める
 

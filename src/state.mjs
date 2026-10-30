@@ -1,7 +1,9 @@
 // Config, state and the report mailbox, kept as plain files:
 //   Codex:       $CODEX_HOME/session-manager/ (default ~/.codex/session-manager/)
 //   Claude Code: $CLAUDE_CONFIG_DIR/session-manager-mcp/ (default ~/.claude/session-manager-mcp/)
-// CSM_HOME overrides both.
+//   Devin:       $DEVIN_CONFIG_HOME/session-manager/ (default ~/.config/devin/session-manager/;
+//                %APPDATA%\devin\session-manager\ on Windows)
+// CSM_HOME overrides all.
 
 import { mkdirSync, readFileSync, writeFileSync, renameSync, appendFileSync, existsSync, statSync, openSync, readSync, closeSync, watch } from 'node:fs';
 import { homedir } from 'node:os';
@@ -17,6 +19,18 @@ export const DEFAULT_CONFIG = {
     // acceptEdits.
     permissionMode: null,
   },
+  devin: {
+    // null: `devin` on PATH, or the Devin desktop app's bundled CLI.
+    path: null,
+    // null: map defaults.approvalPolicy (never -> smart, on-request ->
+    // accept-edits, untrusted -> ask). One of bypass | smart | accept-edits |
+    // ask | plan overrides it.
+    mode: null,
+    // Answer for permission prompts the session mode still lets through.
+    permission: 'allow_once',
+    // null: the first method the agent offers (devin-browser today).
+    authMethod: null,
+  },
   // No cap on the number of running sessions: a new one starts while the PC
   // has room (free memory, and CPU when maxCpuPct is a number; null turns the
   // CPU check off).
@@ -29,7 +43,7 @@ export const DEFAULT_CONFIG = {
   // On for Codex, where a manager stopped by the limit is not known to come
   // back by itself: stopping short of it leaves the manager some usage, and
   // the watch waits without the model and wakes it with usageRecovered.
-  pauseAtPct: { claude: null, codex: 95 },
+  pauseAtPct: { claude: null, codex: 95, devin: null },
   defaults: {
     sandbox: 'workspace-write',
     approvalPolicy: 'never',
@@ -54,31 +68,37 @@ export const DEFAULT_CONFIG = {
       description: '設計・方式の検討（API・データ構造・画面の構成を決める。1〜2ファイルで済む小さな修正は除く）',
       claude: { model: 'opus', effort: 'xhigh' },
       codex: { effort: 'xhigh' },
+      devin: { effort: 'xhigh' },
     },
     debug: {
       description: '原因の分からない不具合の調査（1回で原因が絞れなければ effort を xhigh に上げる）',
       claude: { model: 'opus', effort: 'high' },
       codex: { effort: 'high' },
+      devin: { effort: 'high' },
     },
     implement: {
       description: 'ふつうの実装・修正',
       claude: { model: 'opus', effort: 'medium' },
       codex: { effort: 'medium' },
+      devin: { effort: 'medium' },
     },
     review: {
       description: 'コードレビュー',
       claude: { model: 'opus', effort: 'high' },
       codex: { effort: 'high' },
+      devin: { effort: 'high' },
     },
     writing: {
       description: '人が読む文章の作成・修正（ドキュメント・画面の文言）',
       claude: { model: 'sonnet', effort: 'high' },
       codex: { effort: 'high' },
+      devin: { effort: 'high' },
     },
     routine: {
       description: '手順の決まった作業・確認（画面の確認・定型の修正・調べものの要約）',
       claude: { model: 'sonnet', effort: 'medium' },
       codex: { effort: 'medium' },
+      devin: { effort: 'medium' },
     },
   },
 };
@@ -100,18 +120,29 @@ export function pauseAtPctFor(cfg, agent) {
   return typeof pct === 'number' && Number.isFinite(pct) ? pct : null;
 }
 
-// Which agent this server manages: CSM_AGENT=claude|codex (default codex).
+// Which agent this server manages: CSM_AGENT=claude|codex|devin (default codex).
 export function agentOf(env = process.env) {
-  return env.CSM_AGENT === 'claude' ? 'claude' : 'codex';
+  if (env.CSM_AGENT === 'claude' || env.CSM_AGENT === 'devin') return env.CSM_AGENT;
+  return 'codex';
+}
+
+// Devin's user config directory: ~/.config/devin (%APPDATA%\devin on Windows).
+export function devinConfigHome(env = process.env) {
+  if (env.DEVIN_CONFIG_HOME) return env.DEVIN_CONFIG_HOME;
+  if (process.platform === 'win32') return join(env.APPDATA || join(homedir(), 'AppData', 'Roaming'), 'devin');
+  return join(env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'devin');
 }
 
 export function stateDir(env = process.env) {
   const override = env.CSM_HOME;
+  const agent = agentOf(env);
   const base =
     override ||
-    (agentOf(env) === 'claude'
+    (agent === 'claude'
       ? join(env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'), 'session-manager-mcp')
-      : join(env.CODEX_HOME || join(homedir(), '.codex'), 'session-manager'));
+      : agent === 'devin'
+        ? join(devinConfigHome(env), 'session-manager')
+        : join(env.CODEX_HOME || join(homedir(), '.codex'), 'session-manager'));
   mkdirSync(base, { recursive: true });
   return base;
 }
@@ -161,6 +192,7 @@ export class Store {
       ...user,
       defaults: { ...DEFAULT_CONFIG.defaults, ...(user.defaults ?? {}) },
       claude: { ...DEFAULT_CONFIG.claude, ...(user.claude ?? {}) },
+      devin: { ...DEFAULT_CONFIG.devin, ...(user.devin ?? {}) },
       // { claude: 90 } keeps the built-in value for the other agent.
       ...(user.pauseAtPct && typeof user.pauseAtPct === 'object'
         ? { pauseAtPct: { ...DEFAULT_CONFIG.pauseAtPct, ...user.pauseAtPct } }

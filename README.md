@@ -4,7 +4,7 @@
 
 **頼みたい作業が何件あっても、話しかけるのはひとつのチャットだけ。**
 
-Claude Code や Codex で作業を並行して進めるとき、セッションをいくつも開いて、1つずつ様子を見て回っていませんか。Inline Agent Orchestrator を入れると、いつものチャットがまとめ役になります。作業ごとにセッションを立ち上げて進み具合を見守り、判断が必要なことだけをまとめて聞いてきます。画面も操作も、いつもの Claude Code・Codex のままです。
+Claude Code や Codex、Devin で作業を並行して進めるとき、セッションをいくつも開いて、1つずつ様子を見て回っていませんか。Inline Agent Orchestrator を入れると、いつものチャットがまとめ役になります。作業ごとにセッションを立ち上げて進み具合を見守り、判断が必要なことだけをまとめて聞いてきます。画面も操作も、いつもの Claude Code・Codex・Devin のままです。
 
 > [!NOTE]
 > 試作版（v0.9.2）です。単体テストは通過していますが、実際の Claude Code・Codex での動作検証はまだ行っていません。ご利用の前に「[動作確認](#動作確認)」の手順をお試しください。
@@ -101,6 +101,24 @@ node $HOME/.codex/inline-agent-orchestrator/src/setup.mjs codex
 
 Codex を再起動すれば準備完了です。セットアップスクリプトは MCP サーバーを `~/.codex/config.toml` に登録し（変更前のファイルは `config.toml.bak-<日時>` として保存します）、スキルを `~/.agents/skills/manage-sessions/` にインストールします。
 
+### Devin
+
+動作環境: Devin CLI（`devin acp` が動くもの。Devin デスクトップアプリに同梱の CLI でも可）、Node.js 20 以降、git。作業セッションは ACP（Agent Client Protocol）で動かします
+
+ターミナルで次のコマンドを順に実行します。
+
+```bash
+git clone https://github.com/horiu/inline-agent-orchestrator.git
+```
+
+```bash
+node inline-agent-orchestrator/src/setup.mjs devin
+```
+
+Devin を起動し直せば準備完了です。セットアップスクリプトは MCP サーバーを Devin が読む設定ファイル（`~/.claude.json` と `~/.config/devin/mcp_config.json`。Windows は `%APPDATA%\devin\`）に登録し（変更前のファイルは `*.bak-<日時>` として保存します）、スキルを `~/.agents/skills/manage-sessions/` にインストールします。`~/.claude.json` は Claude Code と共有の設定なので、Claude 側にも `session-manager` を登録している場合は名前がぶつかる点に注意してください。
+
+`devin` コマンドが PATH に無い場合は、状態フォルダの `config.json` で `devin.path` に実行ファイルの場所を書くか、環境変数 `DEVIN_PATH` を設定してください。作業セッションの権限モードは既定で `smart`（モデルが安全と判断する操作は自動承認）で、`config.json` の `devin.mode`（`bypass`・`accept-edits`・`ask`・`plan`）や `devin.permission`（それでも届いた承認要求への返答。既定 `allow_once`）で変えられます。
+
 ## 使い方
 
 ### 始め方
@@ -111,6 +129,7 @@ Codex を再起動すれば準備完了です。セットアップスクリプ�
 | --- | --- |
 | Claude Code | `/inline-agent-orchestrator:manage-sessions` |
 | Codex | `$manage-sessions` |
+| Devin | `/manage-sessions` |
 
 オーケストレーターが作業を分割し、作業用のセッションを起動して監視を始めます。「PR を作成するまで」「調査して報告するまで」のように、どこまで進めるかを添えると、途中で止まらずに進みます。
 
@@ -523,14 +542,15 @@ npm test
 | `src/version.mjs` | 動いている版・ディスクに入っている版・GitHub の最新の版を比べる |
 | `src/todos.mjs` | TODO の条件の判定と、0.8.0 までの記録の移し替え |
 | `src/backends/` | Codex（app-server）と Claude Code（CLI）それぞれの実装 |
-| `src/setup.mjs` | セットアップスクリプト（Codex への登録とスキルのインストール、Claude Code の status line の設定） |
+| `src/setup.mjs` | セットアップスクリプト（Codex・Devin への登録とスキルのインストール、Claude Code の status line の設定） |
+| `src/acp.mjs` / `src/backends/devin.mjs` | Devin（`devin acp`）との ACP 通信と、作業セッションの起動・監視・指示の実装 |
 | `src/allow-report.mjs` / `hooks/hooks.json` | Claude のデスクトップアプリの作業セッションの `report` を確認なしで許可するフック |
 | `src/claude-statusline.mjs` | Claude Code の使用量を記録する status line |
 | `src/appserver.mjs` / `src/ws.mjs` | Codex app-server のクライアント（Windows の Node.js は Unix ドメインソケットを扱えないため、`codex app-server proxy` 経由の WebSocket で通信） |
 | `skills/manage-sessions/` | オーケストレーターの手順（スキル） |
 | `skills/status/` | 一覧のコマンド（`/inline-agent-orchestrator:status`） |
 | `.claude-plugin/` | Claude Code のプラグインとマーケットプレイスの定義 |
-| `test/` | Codex・Claude Code の CLI と app-server を模したモックによる単体テスト |
+| `test/` | Codex・Claude Code・Devin の CLI と app-server・ACP を模したモックによる単体テスト |
 
 <details>
 <summary>プラグインを使わずに Claude Code にインストールする</summary>

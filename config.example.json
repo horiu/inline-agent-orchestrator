@@ -5,11 +5,18 @@
     "path": "claude",
     "permissionMode": null
   },
+  "devin": {
+    "path": null,
+    "mode": null,
+    "permission": "allow_once",
+    "authMethod": null
+  },
   "minFreeMemGb": 2,
   "maxCpuPct": 90,
   "pauseAtPct": {
     "claude": null,
-    "codex": 95
+    "codex": 95,
+    "devin": null
   },
   "defaults": {
     "sandbox": "workspace-write",
@@ -29,6 +36,9 @@
       },
       "codex": {
         "effort": "xhigh"
+      },
+      "devin": {
+        "effort": "xhigh"
       }
     },
     "debug": {
@@ -38,6 +48,9 @@
         "effort": "high"
       },
       "codex": {
+        "effort": "high"
+      },
+      "devin": {
         "effort": "high"
       }
     },
@@ -49,6 +62,9 @@
       },
       "codex": {
         "effort": "medium"
+      },
+      "devin": {
+        "effort": "medium"
       }
     },
     "review": {
@@ -58,6 +74,9 @@
         "effort": "high"
       },
       "codex": {
+        "effort": "high"
+      },
+      "devin": {
         "effort": "high"
       }
     },
@@ -69,6 +88,9 @@
       },
       "codex": {
         "effort": "high"
+      },
+      "devin": {
+        "effort": "high"
       }
     },
     "routine": {
@@ -78,6 +100,9 @@
         "effort": "medium"
       },
       "codex": {
+        "effort": "medium"
+      },
+      "devin": {
         "effort": "medium"
       }
     }
