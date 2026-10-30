@@ -323,3 +323,43 @@ test('a permission answer after the connection died does not blow up', async () 
   // Nothing could be written on the dead pipe — and nothing rejected.
   assert.equal(fake.permissionReplies.length, 0);
 });
+
+test('a disconnect clears the transcript so a reload does not duplicate turns', async () => {
+  const fake = new FakeDevin();
+  fake.addSession('dev_9', { title: 'old work' });
+  const be = devinBackend({ client: mkclient(fake), store: mkstore() });
+  const first = await be.read('dev_9', { turns: 6, maxChars: 4000 });
+  assert.equal(first.turns.length, 1);
+  fake.close('process exited');
+  await sleep(10);
+  assert.equal((await be.status('dev_9')).status, 'notLoaded');
+  // The next read reconnects and replays the transcript exactly once.
+  const second = await be.read('dev_9', { turns: 6, maxChars: 4000 });
+  assert.equal(second.turns.length, 1);
+  assert.equal(second.turns[0].user, 'earlier ask');
+  assert.equal(second.turns[0].agent, 'earlier answer');
+});
+
+test('read on an already-loaded session answers from the transcript without reloading', async () => {
+  const fake = new FakeDevin();
+  const be = devinBackend({ client: mkclient(fake), store: mkstore() });
+  const { threadId } = await be.start({ name: 'job', cwd: process.cwd(), instructions: '', firstMessage: () => 'go' }, {});
+  await sleep(20); // the prompt settles; its live chunks sit in the transcript
+  const loads = fake.calls.filter((c) => c.method === 'session/load').length;
+  const out = await be.read(threadId, { turns: 6, maxChars: 4000 });
+  assert.equal(fake.calls.filter((c) => c.method === 'session/load').length, loads);
+  assert.ok(out.turns.length >= 1);
+  assert.ok(out.turns.at(-1).agent.includes('doing it'));
+});
+
+test('a lock seen earlier is re-checked before send and clears when released', async () => {
+  const fake = new FakeDevin();
+  fake.addSession('dev_l', { locked: true });
+  const be = devinBackend({ client: mkclient(fake), store: mkstore() });
+  await be.listAll({ limit: 10 }, {});
+  await assert.rejects(be.send('dev_l', 'work', 'start', null, {}), ToolError);
+  // The holder released the session; the next send re-lists and goes through.
+  fake.sessions.get('dev_l').locked = false;
+  const r = await be.send('dev_l', 'work', 'start', null, {});
+  assert.equal(r.delivery, 'started');
+});

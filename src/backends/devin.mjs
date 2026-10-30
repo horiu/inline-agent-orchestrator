@@ -213,6 +213,12 @@ export function devinBackend({ client, store, mode = null, permission = 'allow_o
           emitTurnCompleted(sid, 'failed', reason);
         }
         e.loaded = false;
+        // State gathered from the dead process is stale: the next
+        // session/load replays the transcript again, and a leftover
+        // promptError/waiting flag would misreport the session.
+        e.transcript = [];
+        e.promptError = null;
+        e.activeFlags = [];
       }
       // Clearing after the emit also detaches the in-flight prompts: their
       // rejection lands a tick later and must not emit "failed" a second time.
@@ -246,6 +252,20 @@ export function devinBackend({ client, store, mode = null, permission = 'allow_o
       loading.set(sid, run);
     }
     await loading.get(sid);
+  }
+
+  // `e.locked` mirrors the `isLocked` of session/list. A lock seen once must
+  // not pin a session forever after the holding process went away, so callers
+  // that act on the flag re-verify it here (throttled, one list at a time).
+  let lastLockCheck = 0;
+  async function refreshLocks({ force = false } = {}) {
+    if (!force && Date.now() - lastLockCheck < 30_000) return;
+    const res = await client.request(MSGS.list, {});
+    lastLockCheck = Date.now();
+    for (const s of res?.sessions ?? res?.data ?? []) {
+      const sid = s.sessionId ?? s.id;
+      if (sid) entry(sid).locked = !!(s._meta?.['cognition.ai/isLocked'] ?? s.isLocked);
+    }
   }
 
   // Fire session/prompt without waiting for the turn to finish; settling of
@@ -386,18 +406,23 @@ export function devinBackend({ client, store, mode = null, permission = 'allow_o
     // session/new too (those are already loaded and produce no replay).
     async read(id, { turns = 6, maxChars = 4000 }, target) {
       const captured = [];
+      const needsLoad = !live.get(id)?.loaded;
       addCapture(id, captured);
       try {
-        if (!live.get(id)?.loaded) await loadSession(id, target?.cwd, captured, target?.devinWorker === true);
+        if (needsLoad) await loadSession(id, target?.cwd, captured, target?.devinWorker === true);
         // Wait until the replay quiets down (or a cap, for huge transcripts).
-        let last = -1;
-        let quiet = 0;
-        for (let i = 0; i < 100 && quiet < 3; i++) {
-          await new Promise((r) => setTimeout(r, 100));
-          if (captured.length === last) quiet++;
-          else {
-            last = captured.length;
-            quiet = 0;
+        // Only after our own load: an already-loaded session returns its
+        // transcript at once instead of watching live traffic go quiet.
+        if (needsLoad) {
+          let last = -1;
+          let quiet = 0;
+          for (let i = 0; i < 100 && quiet < 3; i++) {
+            await new Promise((r) => setTimeout(r, 100));
+            if (captured.length === last) quiet++;
+            else {
+              last = captured.length;
+              quiet = 0;
+            }
           }
         }
       } finally {
@@ -462,6 +487,9 @@ export function devinBackend({ client, store, mode = null, permission = 'allow_o
     // change: { model?, effort? } for this turn and the turns after it.
     async send(id, message, mode, target, change = {}) {
       const e = entry(id);
+      // A lock reported earlier may be stale (the holder has since exited);
+      // verify against a fresh session/list before refusing.
+      if (e.locked) await refreshLocks({ force: true }).catch(() => {});
       if (e.locked)
         throw new ToolError('Devin のほかのプロセス（TUI・別の監視プロセス）がこの会話を開いています。そちらを閉じてから再試行してください');
       const status = liveStatus(id).status;
@@ -519,6 +547,9 @@ export function devinBackend({ client, store, mode = null, permission = 'allow_o
       if (!waiting.length) return [];
       ticking = true;
       try {
+        // Pick up locks taken and released by other processes since the
+        // last session/list (throttled inside refreshLocks).
+        await refreshLocks().catch(() => {});
         const events = [];
         for (const [id, target] of waiting) {
           // Another process (TUI, a second manager) owns this session; send()
