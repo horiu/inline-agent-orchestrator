@@ -3,6 +3,8 @@
 //
 //   node src/setup.mjs codex                 register the MCP server in Codex and install the skill
 //   node src/setup.mjs codex --remove        undo it (the clone and the records stay)
+//   node src/setup.mjs devin                 register the MCP server in Devin and install the skill
+//   node src/setup.mjs devin --remove        undo it
 //   node src/setup.mjs statusline            let Claude Code record plan usage (status line)
 //   node src/setup.mjs statusline --remove   put the previous status line back
 //
@@ -14,6 +16,7 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { claudeStateDir } from './claude-statusline.mjs';
+import { devinConfigHome } from './state.mjs';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const SERVER_PATH = join(ROOT, 'src', 'server.mjs');
@@ -228,6 +231,105 @@ export function removeCodex({ env = process.env, home = homedir(), now = new Dat
   };
 }
 
+// ---- Devin ----
+
+// Devin reads global MCP servers from ~/.claude.json (shown as the "Source"
+// by `devin mcp list`; shared with Claude Code's MCP config) and from
+// ~/.config/devin/mcp_config.json (%APPDATA%\devin\mcp_config.json on
+// Windows). Both use the same `mcpServers` map of { command, args, env }.
+// User-scope skills live in ~/.agents/skills/<name>/SKILL.md.
+export function upsertDevinServer(json, block) {
+  let cfg = {};
+  const text = json.trim();
+  if (text) {
+    try {
+      cfg = JSON.parse(text);
+    } catch {
+      throw new Error(`mcp_config.json を JSON として読めません。手で直してから、もう一度実行してください（このファイルは変えていません）`);
+    }
+  }
+  if (typeof cfg !== 'object' || cfg === null || Array.isArray(cfg)) cfg = {};
+  const servers = typeof cfg.mcpServers === 'object' && cfg.mcpServers !== null ? cfg.mcpServers : {};
+  return JSON.stringify({ ...cfg, mcpServers: { ...servers, [SERVER_KEY]: block } }, null, 2) + '\n';
+}
+
+export function removeDevinServer(json) {
+  const cfg = JSON.parse(json);
+  if (typeof cfg !== 'object' || cfg === null || typeof cfg.mcpServers !== 'object' || cfg.mcpServers === null) return json;
+  if (!Object.hasOwn(cfg.mcpServers, SERVER_KEY)) return json;
+  delete cfg.mcpServers[SERVER_KEY];
+  return JSON.stringify(cfg, null, 2) + '\n';
+}
+
+function devinPaths(env, home) {
+  return {
+    claudeJsonPath: join(home, '.claude.json'),
+    mcpPath: join(devinConfigHome(env), 'mcp_config.json'),
+    skillPath: join(home, '.agents', 'skills', 'manage-sessions'),
+  };
+}
+
+// MCP config files Devin is known to read; the server block is upserted
+// into every one of them so both CLI/ACP sessions and the desktop app see it.
+function devinMcpPaths(env, home) {
+  const { claudeJsonPath, mcpPath } = devinPaths(env, home);
+  return [claudeJsonPath, mcpPath];
+}
+
+export function devinServerBlock(node) {
+  return { command: node, args: [SERVER_PATH], env: { CSM_AGENT: 'devin' } };
+}
+
+export function setupDevin({ env = process.env, home = homedir(), now = new Date(), node = nodeCommand() } = {}) {
+  const { skillPath } = devinPaths(env, home);
+  const block = devinServerBlock(node);
+  const touched = [];
+  for (const p of devinMcpPaths(env, home)) {
+    mkdirSync(dirname(p), { recursive: true });
+    const before = existsSync(p) ? readFileSync(p, 'utf8') : '';
+    const after = upsertDevinServer(before, block);
+    if (after !== before) {
+      const backedUp = backup(p, now);
+      writeFileSync(p, after, 'utf8');
+      touched.push({ path: p, backedUp });
+    }
+  }
+  mkdirSync(dirname(skillPath), { recursive: true });
+  cpSync(SKILL_SOURCE, skillPath, { recursive: true, force: true });
+  return { touched, skillPath };
+}
+
+export function removeDevin({ env = process.env, home = homedir(), now = new Date() } = {}) {
+  const { skillPath } = devinPaths(env, home);
+  const touched = [];
+  for (const p of devinMcpPaths(env, home)) {
+    const before = existsSync(p) ? readFileSync(p, 'utf8') : '';
+    let after = before;
+    try {
+      after = removeDevinServer(before);
+    } catch {
+      // An unreadable file is left alone.
+    }
+    if (after !== before) {
+      const backedUp = backup(p, now);
+      writeFileSync(p, after, 'utf8');
+      touched.push({ path: p, backedUp });
+    }
+  }
+  const skillFile = join(skillPath, 'SKILL.md');
+  const ours =
+    existsSync(skillFile) && /^name:\s*manage-sessions\s*$/m.test(readFileSync(skillFile, 'utf8')) && /session-manager/.test(readFileSync(skillFile, 'utf8'));
+  if (ours) rmSync(skillPath, { recursive: true, force: true });
+  return {
+    touched,
+    skillPath,
+    skillRemoved: ours,
+    skillLeft: !ours && existsSync(skillPath),
+    stateDir: env.CSM_HOME || join(devinConfigHome(env), 'session-manager'),
+    root: ROOT,
+  };
+}
+
 // ---- Claude Code status line ----
 
 function readSettings(path) {
@@ -360,6 +462,33 @@ function main(argv) {
     console.log('Codex を起動し直し、監視役にする会話で $manage-sessions と打ってください。');
     return;
   }
+  if (what === 'devin' && flags.includes('--remove')) {
+    const r = removeDevin();
+    if (r.touched.length) {
+      for (const t of r.touched) console.log(`MCP サーバーの登録を外しました: ${t.path}${t.backedUp ? `（元: ${t.backedUp}）` : ''}`);
+    } else {
+      console.log('MCP サーバーは登録されていませんでした。');
+    }
+    if (r.skillRemoved) console.log(`スキルを削除しました: ${r.skillPath}`);
+    else if (r.skillLeft) console.log(`${r.skillPath} はこの道具のスキルではないため、残しました。`);
+    console.log('Devin を起動し直すと、反映されます。');
+    console.log('次のフォルダは残しています。不要なら削除してください。');
+    console.log(`  監視の記録: ${r.stateDir}`);
+    console.log(`  この道具: ${r.root}`);
+    return;
+  }
+  if (what === 'devin') {
+    const r = setupDevin();
+    if (r.touched.length) {
+      for (const t of r.touched) console.log(`MCP サーバーを登録しました: ${t.path}${t.backedUp ? `（元: ${t.backedUp}）` : ''}`);
+    } else {
+      console.log('MCP サーバーはもう登録済みでした。');
+    }
+    console.log(`Skill を入れました: ${r.skillPath}`);
+    console.log('Devin を起動し直し、監視役にする会話で /manage-sessions と打ってください。');
+    console.log('注意: ~/.claude.json は Claude Code と共有の MCP 設定です。Claude 側にも session-manager を登録していると名前がぶつかります。');
+    return;
+  }
   if (what === 'statusline') {
     const r = setupStatusline({ remove: flags.includes('--remove') });
     if (flags.includes('--remove')) {
@@ -372,7 +501,7 @@ function main(argv) {
     if (r.backedUp) console.log(`  元のファイル: ${r.backedUp}`);
     return;
   }
-  console.log('使い方: node src/setup.mjs codex [--remove] | statusline [--remove]');
+  console.log('使い方: node src/setup.mjs codex [--remove] | devin [--remove] | statusline [--remove]');
   process.exitCode = what ? 1 : 0;
 }
 

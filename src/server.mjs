@@ -5,8 +5,10 @@
 import { createInterface } from 'node:readline';
 import { pathToFileURL } from 'node:url';
 import { AppServerClient, daemonConnector, embeddedConnector } from './appserver.mjs';
+import { AcpClient, resolveDevinPath } from './acp.mjs';
 import { claudeBackend } from './backends/claude.mjs';
 import { codexBackend } from './backends/codex.mjs';
+import { devinBackend } from './backends/devin.mjs';
 import { Store, agentOf } from './state.mjs';
 import { refreshStatuslineCopy } from './setup.mjs';
 import { createTools, ToolError } from './tools.mjs';
@@ -126,6 +128,11 @@ export function main() {
     } catch {
       // Best effort: the old copy keeps working.
     }
+  } else if (agent === 'devin') {
+    // One `devin acp` child per server process; sessions persist in Devin's
+    // own store and are reloaded with session/load after a restart.
+    client = new AcpClient({ devinPath: cfg.devin.path ?? resolveDevinPath(), authMethod: cfg.devin.authMethod });
+    backend = devinBackend({ client, store, mode: cfg.devin.mode, permission: cfg.devin.permission });
   } else {
     const connector = cfg.transport === 'embedded' ? embeddedConnector(cfg.codexPath) : daemonConnector(cfg.codexPath);
     // Connects lazily: worker conversations only call `report`, which never

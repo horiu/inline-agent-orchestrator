@@ -23,7 +23,7 @@ const NOTICES_KEPT = 50;
 // A stuck count saved longer ago than this is from a watch that is no longer
 // running (the manager was closed or stopped): a new watch starts over.
 const STUCK_GAP_MS = 10 * 60_000;
-const RULES_FILE = { codex: 'AGENTS.md', claude: 'CLAUDE.md' };
+const RULES_FILE = { codex: 'AGENTS.md', claude: 'CLAUDE.md', devin: 'AGENTS.md' };
 const CPU_SAMPLE_MS = 1000;
 // A watch checks the TODO conditions that read gh or the usage this often.
 const TODO_CHECK_MS = 5 * 60_000;
@@ -45,7 +45,7 @@ const APP_HINT = {
 };
 
 export function workerInstructions(name, agent = 'codex', { app = false } = {}) {
-  const idHint = agent === 'codex' ? '、threadId には最初の依頼に書かれた ID' : '';
+  const idHint = agent === 'codex' || agent === 'devin' ? '、threadId には最初の依頼に書かれた ID' : '';
   return [
     `あなたは監視役の会話（session-manager）から仕事を受けた作業の会話「${name}」です。`,
     `- 区切りごとに MCP の道具 report（kind: "progress"）で 1〜3 行の報告を書く。from には「${name}」${idHint}を入れる`,
@@ -516,14 +516,14 @@ export function createTools({ backend, client, store, sys = {} }) {
 
     read_session: {
       description:
-        '会話の最近のやりとりを読む（依頼の文・AI の返事・状態・エラー・利用者への質問）。落ちたのか、判断待ちなのか、終わったのかを見分けるのに使う。長い文は末尾を残して切る。Codex はターンごと、Claude Code は最近の出力（claude logs）。利用制限で止まったらしいときは usageLimit に当たった行を返す（Codex はターンの error を見る）。',
+        '会話の最近のやりとりを読む（依頼の文・AI の返事・状態・エラー・利用者への質問）。落ちたのか、判断待ちなのか、終わったのかを見分けるのに使う。長い文は末尾を残して切る。Codex はターンごと、Devin は読み込んだやりとりをターンにまとめたもの、Claude Code は最近の出力（claude logs）。利用制限で止まったらしいときは usageLimit に当たった行を返す（Codex はターンの error を見る）。',
       readOnly: true,
       inputSchema: {
         type: 'object',
         required: ['threadId'],
         properties: {
           threadId: { type: 'string' },
-          turns: { type: 'integer', minimum: 1, maximum: 10, default: 2, description: 'Codex だけ: 読むターンの数' },
+          turns: { type: 'integer', minimum: 1, maximum: 10, default: 2, description: 'Codex と Devin だけ: 読むターンの数' },
           maxChars: { type: 'integer', minimum: 500, maximum: 20000, default: 6000 },
         },
       },
@@ -547,7 +547,7 @@ export function createTools({ backend, client, store, sys = {} }) {
           model: { type: 'string', description: 'profile より優先。どちらも無ければ config の defaults.model、それも無ければ既定のモデル' },
           effort: { type: 'string', description: 'reasoning effort（例 low / medium / high / xhigh）。profile より優先。省略時は既定' },
           sandbox: { type: 'string', enum: ['read-only', 'workspace-write', 'danger-full-access'], description: 'Codex だけ' },
-          approvalPolicy: { type: 'string', enum: ['untrusted', 'on-request', 'never'], description: 'Codex だけ' },
+          approvalPolicy: { type: 'string', enum: ['untrusted', 'on-request', 'never'], description: 'Codex と Devin だけ（Devin ではセッションモードに対応づける）' },
           permissionMode: {
             type: 'string',
             enum: ['default', 'acceptEdits', 'plan', 'auto', 'dontAsk', 'bypassPermissions'],
@@ -677,6 +677,8 @@ export function createTools({ backend, client, store, sys = {} }) {
             model: res.model ?? useModel,
             effort: useEffort,
             nameError: res.nameError ?? null,
+            ...(res.modeError ? { modeError: res.modeError } : {}),
+            ...(res.configError ? { configError: res.configError } : {}),
             open: be.openCommand(res.threadId, target),
           };
         } catch (err) {
@@ -688,7 +690,7 @@ export function createTools({ backend, client, store, sys = {} }) {
 
     send_message: {
       description:
-        '会話へ連絡・依頼を送る。mode="auto"（既定）: 動いている会話には今のターンの後に回す（queue）、止まっている会話は続きから新しいターンを始める。mode="steer" は動いているターンに割り込んで足す（Codex だけ）。profile・model・effort を付けると、この依頼からモデルとエフォートを変える（以後の続きにも効く。Codex は止まっている会話にだけ。Claude Code は動いていれば、預かって届けるときから）。',
+        '会話へ連絡・依頼を送る。mode="auto"（既定）: 動いている会話には今のターンの後に回す（queue）、止まっている会話は続きから新しいターンを始める。mode="steer" は動いているターンに割り込んで足す（Codex と Devin だけ）。profile・model・effort を付けると、この依頼からモデルとエフォートを変える（以後の続きにも効く。Codex は止まっている会話にだけ。Claude Code と Devin は動いていれば、預かって届けるときから）。',
       inputSchema: {
         type: 'object',
         required: ['threadId', 'message'],
